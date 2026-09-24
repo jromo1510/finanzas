@@ -6,10 +6,19 @@
 'use strict';
 
 const CFG = Object.assign({ CURRENCY: 'S/', LOCALE: 'es-PE', SYNC_INTERVAL_MS: 15000, APP_NAME: 'Finanzas', APP_VERSION: '1.0.0' }, window.APP_CONFIG || {});
+CFG.APP_VERSION = '2.0.0'; // la version la marca este archivo, no config.js
 const CAT_TRANSF = 'TRANSF. CUENTAS';
 const CAT_SALDO_INI = 'SALDO INICIAL';
 const CAT_PROTEGIDAS = [CAT_SALDO_INI, CAT_TRANSF];
 const COLORES = ['#0a84ff', '#30d158', '#ff9f0a', '#ff375f', '#bf5af2', '#64d2ff', '#ffd60a', '#ac8e68', '#5e5ce6', '#8e8e93'];
+const SYM = { PEN: 'S/', USD: 'US$' };
+// Iconos por defecto de las categorias de fabrica (cada una se puede cambiar en Mas > Categorias).
+const CAT_ICON_DEF = { 'SUELDO': '💼', 'OTROS INGRESOS': '💵', 'SUPERMERCADO': '🛒', 'MERCADO': '🛒', 'COMIDA / RESTAURANTES': '🍽️', 'VIVIENDA': '🏠',
+  'SERVICIOS': '💡', 'TRANSPORTE': '🚗', 'SALUD': '🩺', 'EDUCACION': '🎓', 'ENTRETENIMIENTO': '🎬', 'ROPA': '👕', 'TARJETA DE CREDITO': '💳',
+  'SEGUROS': '🛡️', 'MASCOTAS': '🐾', 'REGALOS': '🎁', 'VIAJES': '✈️', 'G. BANCARIOS': '🏦', 'INTERESES': '📈', 'VARIOS': '🧩',
+  'TRANSF. CUENTAS': '🔁', 'SALDO INICIAL': '🏁' };
+const ICONOS_CAT = ['🛒', '🍽️', '☕', '🏠', '💡', '📱', '🌐', '🚗', '⛽', '🚕', '🚌', '🩺', '💊', '🎓', '📚', '🎬', '🎮', '🎵', '👕', '👟', '💇', '💳', '🛡️',
+  '🐾', '👶', '🎁', '✈️', '🏖️', '🏦', '📈', '💼', '💵', '💰', '🧾', '🔧', '🧹', '🏋️', '⚽', '🍺', '🍕', '🎉', '⛪', '❤️', '🧩', '🏷️'];
 const ICONOS_META = ['🎯', '🏖️', '✈️', '🏠', '🚗', '🎓', '💍', '👶', '🐶', '💻', '📱', '🎁', '🏥', '🛟', '💰', '🎉'];
 
 /* ============================ ESTADO ============================ */
@@ -24,6 +33,7 @@ const S = {
   lastSync: 0, pending: 0, loaded: false,
   sumTab: 'total',
   calView: 'month', week: null, deficits: [],
+  moneda: 'PEN', privacy: false, presup: {}, catIconos: {},
   idx: { cta: new Map(), enlace: new Map(), meta: new Map() }
 };
 
@@ -46,9 +56,14 @@ function esc(s) {
 }
 function fmt(n) { return Number(n || 0).toLocaleString(CFG.LOCALE, { minimumFractionDigits: 2, maximumFractionDigits: 2 }); }
 function fmt0(n) { return Math.round(Number(n || 0)).toLocaleString(CFG.LOCALE, { maximumFractionDigits: 0 }); }
-function money(n) { return (n < 0 ? '-' : '') + CFG.CURRENCY + ' ' + fmt(Math.abs(n)); }
-function moneyPlus(n) { return (n > 0 ? '+' : n < 0 ? '-' : '') + CFG.CURRENCY + ' ' + fmt(Math.abs(n)); }
+// Montos: la moneda por defecto es la elegida en el calendario (S.moneda); para una cuenta
+// concreta se pasa la suya (ver curOf). Con "Ocultar montos" activo se muestran puntos.
+const MASK = '•••••';
+function sym(cur) { return SYM[cur || S.moneda] || CFG.CURRENCY; }
+function money(n, cur) { return S.privacy ? sym(cur) + ' ' + MASK : (n < 0 ? '-' : '') + sym(cur) + ' ' + fmt(Math.abs(n)); }
+function moneyPlus(n, cur) { return S.privacy ? sym(cur) + ' ' + MASK : (n > 0 ? '+' : n < 0 ? '-' : '') + sym(cur) + ' ' + fmt(Math.abs(n)); }
 function compact(n) {
+  if (S.privacy) return '•••';
   const a = Math.abs(n), sign = n < 0 ? '-' : '';
   if (a >= 1e6) return sign + (a / 1e6).toFixed(a >= 1e7 ? 0 : 1) + 'M';
   if (a >= 1e5) return sign + Math.round(a / 1000) + 'k';
@@ -133,6 +148,8 @@ function applyMeta(m) {
   if (m.lockedWeeks) S.locked = m.lockedWeeks;
   if (m.fijosAplicados) S.fijosAplicados = m.fijosAplicados;
   if (m.saldos) S.saldos = m.saldos;
+  if (m.presupuestos) S.presup = m.presupuestos;
+  if (m.catIconos) S.catIconos = m.catIconos;
   if (m.serverToday) S.serverToday = m.serverToday;
   if (typeof m.version === 'number') S.version = m.version;
   if (m.user) { S.user = Object.assign({}, S.user, m.user); store.set('user', S.user); }
@@ -157,13 +174,14 @@ function reindex() {
   S.idx.enlace = en;
 }
 function saveCache() {
-  store.set('cache', { movs: S.movs, cuentas: S.cuentas, metas: S.metas, cats: S.cats, locked: S.locked, fijosAplicados: S.fijosAplicados, saldos: S.saldos, serverToday: S.serverToday, version: S.version, ts: Date.now() });
+  store.set('cache', { movs: S.movs, cuentas: S.cuentas, metas: S.metas, cats: S.cats, locked: S.locked, fijosAplicados: S.fijosAplicados, saldos: S.saldos, presup: S.presup, catIconos: S.catIconos, serverToday: S.serverToday, version: S.version, ts: Date.now() });
 }
 function loadCache() {
   const c = store.get('cache', null);
   if (!c) return false;
   S.movs = c.movs || []; S.cuentas = c.cuentas || []; S.metas = c.metas || []; S.cats = c.cats || [];
   S.locked = c.locked || []; S.fijosAplicados = c.fijosAplicados || []; S.saldos = c.saldos || {}; S.serverToday = c.serverToday;
+  S.presup = c.presup || {}; S.catIconos = c.catIconos || {};
   S.version = -1; // forzar recarga real al conectar
   S.lastSync = c.ts || 0;
   return true;
@@ -173,6 +191,11 @@ const cta = id => S.idx.cta.get(id);
 const ctaName = id => (cta(id) || {}).nombre || 'Cuenta';
 const ctaColor = id => (cta(id) || {}).color || '#8e8e93';
 const isAhorro = id => ((cta(id) || {}).tipo === 'Ahorro');
+const curOf = id => ((cta(id) || {}).moneda === 'USD' ? 'USD' : 'PEN');
+const hasUSD = () => S.cuentas.some(c => c.activa && c.moneda === 'USD');
+function catIcon(c) { return S.catIconos[c] || CAT_ICON_DEF[c] || '🏷️'; }
+// Solo cuentas corrientes en soles (lo que muestran Inicio y los presupuestos).
+const corrPEN = m => isCorr(m.cuentaId) && curOf(m.cuentaId) === 'PEN';
 const isCorr = id => !isAhorro(id);
 const activeCuentas = tipo => S.cuentas.filter(c => c.activa && (!tipo || c.tipo === tipo));
 const getMov = id => S.movs.find(m => m.id === id);
@@ -191,7 +214,7 @@ function isMovLocked(m) {
 }
 
 // "Flujo" = cuentas corrientes (como IBK/BCP en la intranet); el filtro del calendario lo acota a una.
-function inFlow(m) { return isCorr(m.cuentaId) && (!S.filter || m.cuentaId === S.filter); }
+function inFlow(m) { return isCorr(m.cuentaId) && curOf(m.cuentaId) === S.moneda && (!S.filter || m.cuentaId === S.filter); }
 function balanceUpTo(dateStr, realOnly, pred) {
   pred = pred || inFlow;
   let b = 0;
@@ -260,7 +283,11 @@ function toastUndo(msg, fn) { toast(msg, 'info', { label: 'Deshacer', fn }); }
 
 /* ---------- Hojas (bottom sheets) apiladas, con soporte del botón "atras" de Android ---------- */
 const sheets = [];
-let ignorePops = 0;
+// Una sola entrada "guardia" en el historial mientras haya hojas abiertas: el boton/gesto
+// "atras" cierra la hoja de arriba y nunca saca de la app. Cerrar por la interfaz no toca el
+// historial (evita descuadres al cerrar una hoja y abrir otra en seguida).
+let historyGuard = false;
+function pushGuard() { if (!historyGuard) { try { history.pushState({ sheetGuard: true }, ''); historyGuard = true; } catch (e) {} } }
 
 function openSheet(o) {
   const wrap = document.createElement('div');
@@ -286,7 +313,7 @@ function openSheet(o) {
   enableSheetDrag(sh);
   requestAnimationFrame(() => wrap.classList.add('open'));
   document.body.classList.add('sheet-open');
-  try { history.pushState({ sheet: sheets.length }, ''); } catch (e) {}
+  pushGuard();
   if (o.focus) setTimeout(() => { const f = $(o.focus, sh.body); if (f) f.focus(); }, 320);
   return sh;
 }
@@ -303,17 +330,16 @@ function closeSheet(sh) {
   sh = sh || sheets[sheets.length - 1];
   if (!sh || sheets.indexOf(sh) === -1) return;
   removeSheet(sh);
-  ignorePops++;
-  try { history.back(); } catch (e) { ignorePops--; }
 }
 function closeAllSheets() { while (sheets.length) closeSheet(sheets[sheets.length - 1]); }
 function topSheet() { return sheets[sheets.length - 1]; }
 function findSheet(kind) { return sheets.find(s => s.o.kind === kind); }
 window.addEventListener('popstate', () => {
-  if (ignorePops > 0) { ignorePops--; return; }
-  if (dialogOpen) { dialogOpen.cancel(); return; }
+  historyGuard = false;
+  if (dialogOpen) { dialogOpen.cancel(); if (sheets.length) pushGuard(); return; }
   const sh = topSheet();
   if (sh) removeSheet(sh);
+  if (sheets.length) pushGuard();
 });
 function enableSheetDrag(sh) {
   const head = $('.sheet-head', sh.wrap);
@@ -388,7 +414,11 @@ const IC = {
   down: '<svg viewBox="0 0 24 24"><path d="m6 9 6 6 6-6"/></svg>',
   arrow: '<svg viewBox="0 0 24 24"><path d="M5 12h14m-5-5 5 5-5 5"/></svg>',
   sync: '<svg viewBox="0 0 24 24"><path d="M20 11a8 8 0 0 0-14.3-4.9L4 8M4 4v4h4M4 13a8 8 0 0 0 14.3 4.9L20 16m0 4v-4h-4"/></svg>',
-  chart: '<svg viewBox="0 0 24 24"><path d="M4 20V10M10 20V4M16 20v-7M22 20H2"/></svg>'
+  chart: '<svg viewBox="0 0 24 24"><path d="M4 20V10M10 20V4M16 20v-7M22 20H2"/></svg>',
+  eye: '<svg viewBox="0 0 24 24"><path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/></svg>',
+  eyeOff: '<svg viewBox="0 0 24 24"><path d="M3 3l18 18M10.6 5.1A10.9 10.9 0 0 1 12 5c6.4 0 10 7 10 7a17.6 17.6 0 0 1-3.2 4.2M6.6 6.6A17.4 17.4 0 0 0 2 12s3.6 7 10 7a10 10 0 0 0 5.4-1.6M9.9 9.9a3 3 0 0 0 4.2 4.2"/></svg>',
+  faceid: '<svg viewBox="0 0 24 24"><path d="M4 8V6a2 2 0 0 1 2-2h2M16 4h2a2 2 0 0 1 2 2v2M20 16v2a2 2 0 0 1-2 2h-2M8 20H6a2 2 0 0 1-2-2v-2M9 9v1M15 9v1M12 9v4h-1M9 15.5a4 4 0 0 0 6 0"/></svg>',
+  del: '<svg viewBox="0 0 24 24"><path d="M20 6H9l-6 6 6 6h11a1 1 0 0 0 1-1V7a1 1 0 0 0-1-1zM12 10l4 4M16 10l-4 4"/></svg>'
 };
 
 /* ============================ LOGIN ============================ */
@@ -428,7 +458,7 @@ async function doLogin(form) {
     const dev = (navigator.userAgent.match(/\(([^)]+)\)/) || [, ''])[1].slice(0, 60);
     const r = await api('login', usuario, clave, dev);
     S.token = r.token; S.user = { usuario: r.usuario, nombre: r.nombre };
-    store.set('token', S.token); store.set('user', S.user); store.set('lastUser', r.usuario);
+    store.set('token', S.token); store.set('user', S.user); store.set('lastUser', r.usuario); store.set('lastActive', Date.now());
     startApp();
   } catch (e) {
     renderLogin(e.message);
@@ -444,7 +474,7 @@ function onSessionExpired(msg) {
 async function logout() {
   if (!(await ask('Cerrar sesión', 'Tendrás que volver a ingresar tu usuario y contraseña en este dispositivo.', 'Cerrar sesión', true))) return;
   quiet(api('logout'));
-  S.token = null; store.del('token'); store.del('cache');
+  S.token = null; store.del('token'); store.del('cache'); store.del('lock'); store.del('metasDone');
   S.movs = []; S.cuentas = []; S.loaded = false;
   closeAllSheets();
   renderLogin();
@@ -478,6 +508,7 @@ function renderView() {
   $$('.tab').forEach(b => b.classList.toggle('on', b.dataset.tab === S.tab));
   v.className = 'view-' + S.tab;
   v.innerHTML = ({ inicio: viewInicio, calendario: viewCalendario, ahorro: viewAhorro, mas: viewMas })[S.tab]();
+  animateCounts();
 }
 function refreshUI() {
   reindex();
@@ -485,6 +516,7 @@ function refreshUI() {
   renderView();
   refreshSheets();
   renderSelbar();
+  checkMetasDone();
 }
 function refreshSheets() { sheets.forEach(sh => { if (sh.o.live) (sh.o.update ? sh.o.update(sh) : sh.render()); }); }
 function syncLabel() {
@@ -501,9 +533,17 @@ function syncChip() {
 }
 
 /* ============================ INICIO ============================ */
+function saludo() { const h = new Date().getHours(); return h < 12 ? 'Buenos días' : h < 19 ? 'Buenas tardes' : 'Buenas noches'; }
+function eyeBtn() {
+  return '<button class="icon-btn eye" data-act="togglePrivacy" aria-label="' + (S.privacy ? 'Mostrar montos' : 'Ocultar montos') + '">' + (S.privacy ? IC.eyeOff : IC.eye) + '</button>';
+}
+// Numero que se anima al cambiar (ver animateCounts). key identifica el numero entre renders.
+function countNum(key, n, cur, cls) {
+  return '<span class="' + (cls || '') + '" data-count="' + n + '" data-ck="' + key + '" data-cur="' + (cur || '') + '">' + money(n, cur) + '</span>';
+}
 function viewInicio() {
   const nombre = (S.user && S.user.nombre) ? S.user.nombre.split(' ')[0] : '';
-  let h = topbar('Hola' + (nombre ? ', ' + esc(nombre) : ''), syncChip());
+  let h = topbar(saludo() + (nombre ? ', ' + esc(nombre) : ''), eyeBtn() + syncChip());
   if (!S.loaded && !S.movs.length && !S.cuentas.length) return h + '<div class="empty"><div class="spinner"></div><p>Cargando tus datos...</p></div>';
   if (!S.cuentas.length) {
     return h + '<section class="card onboard"><div class="onb-emoji">👋</div><h2>Empecemos</h2>' +
@@ -513,50 +553,69 @@ function viewInicio() {
   }
   const t = today();
   const corr = activeCuentas('Corriente'), aho = activeCuentas('Ahorro');
-  const pred = m => isCorr(m.cuentaId);
-  const disp = sum(S.movs.filter(m => m.estado === 'Real' && pred(m)), m => m.monto);
+  const realDe = f => sum(S.movs.filter(m => m.estado === 'Real' && f(m)), m => m.monto);
+  const disp = realDe(corrPEN);
   const finMes = dstr(new Date(pd(t).getFullYear(), pd(t).getMonth() + 1, 0));
-  const proyFin = balanceUpTo(finMes, false, pred);
-  const ahorro = sum(S.movs.filter(m => m.estado === 'Real' && isAhorro(m.cuentaId)), m => m.monto);
+  const proyFin = balanceUpTo(finMes, false, corrPEN);
+  const ahorroPEN = realDe(m => isAhorro(m.cuentaId) && curOf(m.cuentaId) === 'PEN');
 
   h += '<section class="hero"><div class="hero-lbl">Disponible en cuentas corrientes</div>' +
-    '<div class="hero-amt' + (disp < 0 ? ' neg' : '') + '">' + money(disp) + '</div>' +
-    '<div class="hero-row"><span>Fin de mes (con proyectados)</span><b class="' + (proyFin < 0 ? 'neg' : '') + '">' + money(proyFin) + '</b></div>' +
-    (aho.length ? '<div class="hero-row"><span>Ahorrado</span><b>' + money(ahorro) + '</b></div>' : '') + '</section>';
+    '<div class="hero-amt' + (disp < 0 ? ' neg' : '') + '">' + countNum('disp', disp, 'PEN') + '</div>' +
+    '<div class="hero-row"><span>Fin de mes (con proyectados)</span><b class="' + (proyFin < 0 ? 'neg' : '') + '">' + countNum('fin', proyFin, 'PEN') + '</b></div>' +
+    (aho.some(c => c.moneda !== 'USD') ? '<div class="hero-row"><span>Ahorrado</span><b>' + countNum('aho', ahorroPEN, 'PEN') + '</b></div>' : '');
+  if (hasUSD()) {
+    const dispU = realDe(m => isCorr(m.cuentaId) && curOf(m.cuentaId) === 'USD');
+    const ahoU = realDe(m => isAhorro(m.cuentaId) && curOf(m.cuentaId) === 'USD');
+    h += '<div class="hero-row usd"><span>En dólares</span><b>' + countNum('dispU', dispU, 'USD') + (Math.abs(ahoU) > 0.004 ? ' <small>+ ' + money(ahoU, 'USD') + ' ahorrado</small>' : '') + '</b></div>';
+  }
+  h += '</section>';
 
   h += '<div class="acc-scroll">' + corr.concat(aho).map(c => {
     const b = ctaBalance(c.id, true);
-    return '<button class="acc" data-act="' + (c.tipo === 'Ahorro' ? 'openCuentaHist' : 'openCuentaHist') + '" data-id="' + c.id + '" style="--c:' + c.color + '">' +
-      '<span class="acc-tipo">' + (c.tipo === 'Ahorro' ? 'Ahorro' : 'Corriente') + '</span><span class="acc-name">' + esc(c.nombre) + '</span>' +
-      '<span class="acc-bal' + (b < 0 ? ' neg' : '') + '">' + money(b) + '</span></button>';
+    return '<button class="acc" data-act="openCuentaHist" data-id="' + c.id + '" style="--c:' + c.color + '">' +
+      '<span class="acc-tipo">' + (c.tipo === 'Ahorro' ? 'Ahorro' : 'Corriente') + (c.moneda === 'USD' ? ' · US$' : '') + '</span><span class="acc-name">' + esc(c.nombre) + '</span>' +
+      '<span class="acc-bal' + (b < 0 ? ' neg' : '') + '">' + money(b, c.moneda) + '</span></button>';
   }).join('') + '<button class="acc add" data-act="newCuenta">' + IC.plus + '<span>Cuenta</span></button></div>';
 
-  // Alertas: proyectados vencidos + ruptura de caja del mes actual
+  // Alertas: proyectados vencidos + ruptura de caja del mes actual (soles)
   const venc = vencidos();
   if (venc.length) {
     h += '<button class="alert warn" data-act="openVencidos"><span class="al-ico">⏰</span><span><b>' + venc.length + ' proyectado(s) vencido(s)</b><br><small>Fecha pasada y aún sin ejecutar. Toca para revisar.</small></span></button>';
   }
-  const deficit = deficitDays(firstOfMonth(pd(t)), m => isCorr(m.cuentaId)).filter(d => d.fecha >= t);
+  const deficit = deficitDays(firstOfMonth(pd(t)), corrPEN).filter(d => d.fecha >= t);
   if (deficit.length) {
-    h += '<button class="alert danger" data-act="goCal"><span class="al-ico">🚨</span><span><b>Ruptura de caja el ' + esc(dayLabel(deficit[0].fecha, { day: 'numeric', month: 'long' })) + '</b><br><small>El saldo proyectado llegaría a ' + money(deficit[0].saldo) + '. Revisa el calendario.</small></span></button>';
+    h += '<button class="alert danger" data-act="goCal"><span class="al-ico">🚨</span><span><b>Ruptura de caja el ' + esc(dayLabel(deficit[0].fecha, { day: 'numeric', month: 'long' })) + '</b><br><small>El saldo proyectado llegaría a ' + money(deficit[0].saldo, 'PEN') + '. Revisa el calendario.</small></span></button>';
   }
+
+  // Este mes (soles): el ahorro va aparte, no como gasto
+  const ms = monthStats(firstOfMonth(pd(t)), corrPEN);
+  const o = ms.total, neto = o.sumIng - o.sumEgr - o.aho - o.cam;
+  h += '<section class="card"><div class="card-head"><h2>Este mes</h2><button class="link" data-act="goCalSum">Ver detalle</button></div>' +
+    '<div class="quad"><div><span>Ingresos</span><b class="pos">' + money(o.sumIng, 'PEN') + '</b></div><div><span>Gastos</span><b class="neg">' + money(o.sumEgr, 'PEN') + '</b></div>' +
+    '<div><span>Ahorrado 🐷</span><b class="blue">' + money(o.aho, 'PEN') + '</b></div>' +
+    '<div><span>Neto</span><b class="' + (neto >= 0 ? 'pos' : 'neg') + '">' + moneyPlus(neto, 'PEN') + '</b></div></div>' +
+    (Math.abs(o.cam) > 0.004 ? '<p class="muted small">💱 Incluye cambio de moneda: ' + moneyPlus(-o.cam, 'PEN') + '</p>' : '') +
+    topCats(o.egr, o.sumEgr) + '</section>';
+
+  // Presupuestos del mes
+  h += presupCard(ms);
 
   // Cuadre con el banco
   if (corr.length) {
-    const r = cuadre();
     h += '<section class="card"><div class="card-head"><h2>Cuadre con el banco</h2><button class="link" data-act="openCuadre">Actualizar</button></div>';
-    if (!r.hayDatos) h += '<p class="muted small">Anota el saldo que ves en la app de tu banco y compara con lo registrado aquí.</p>';
-    else h += '<div class="kv"><span>Suma en bancos</span><b>' + money(r.banco) + '</b></div><div class="kv"><span>Según la app (semana actual, real)</span><b>' + money(r.app) + '</b></div>' +
-      '<div class="kv big"><span>Diferencia</span><b class="' + (Math.abs(r.dif) < 0.01 ? 'pos' : r.dif > 0 ? 'blue' : 'neg') + '">' + (Math.abs(r.dif) < 0.01 ? 'Cuadrado ✓' : moneyPlus(r.dif)) + '</b></div>';
+    const monedas = ['PEN'].concat(hasUSD() ? ['USD'] : []);
+    let alguno = false;
+    monedas.forEach(cur => {
+      const r = cuadre(cur);
+      if (!r.hayDatos) return;
+      alguno = true;
+      h += (monedas.length > 1 ? '<h4 class="sec">' + (cur === 'USD' ? 'Dólares' : 'Soles') + '</h4>' : '') +
+        '<div class="kv"><span>Suma en bancos</span><b>' + money(r.banco, cur) + '</b></div><div class="kv"><span>Según la app (semana actual, real)</span><b>' + money(r.app, cur) + '</b></div>' +
+        '<div class="kv big"><span>Diferencia</span><b class="' + (Math.abs(r.dif) < 0.01 ? 'pos' : r.dif > 0 ? 'blue' : 'neg') + '">' + (Math.abs(r.dif) < 0.01 ? 'Cuadrado ✓' : moneyPlus(r.dif, cur)) + '</b></div>';
+    });
+    if (!alguno) h += '<p class="muted small">Anota el saldo que ves en la app de tu banco y compara con lo registrado aquí.</p>';
     h += '</section>';
   }
-
-  // Este mes
-  const ms = monthStats(firstOfMonth(pd(t)), m => isCorr(m.cuentaId));
-  h += '<section class="card"><div class="card-head"><h2>Este mes</h2><button class="link" data-act="goCalSum">Ver detalle</button></div>' +
-    '<div class="trio"><div><span>Ingresos</span><b class="pos">' + money(ms.total.sumIng) + '</b></div><div><span>Gastos</span><b class="neg">' + money(ms.total.sumEgr) + '</b></div>' +
-    '<div><span>Neto</span><b class="' + (ms.total.sumIng - ms.total.sumEgr >= 0 ? 'pos' : 'neg') + '">' + moneyPlus(ms.total.sumIng - ms.total.sumEgr) + '</b></div></div>' +
-    topCats(ms.total.egr, ms.total.sumEgr) + '</section>';
 
   // Metas
   const metas = S.metas.filter(m => m.estado !== 'Archivada' && cta(m.cuentaId));
@@ -576,19 +635,39 @@ function viewInicio() {
 function topCats(egr, total) {
   const rows = Object.keys(egr).map(k => [k, egr[k]]).sort((a, b) => b[1] - a[1]).slice(0, 5);
   if (!rows.length) return '';
-  return '<div class="bars">' + rows.map(r => '<div class="barrow"><span class="bl">' + esc(r[0]) + '</span><span class="bt"><i style="width:' + Math.max(3, (r[1] / (total || 1)) * 100).toFixed(1) + '%"></i></span><span class="bv">' + money(r[1]) + '</span></div>').join('') + '</div>';
+  return '<div class="bars">' + rows.map(r => '<div class="barrow"><span class="bl">' + catIcon(r[0]) + ' ' + esc(r[0]) + '</span><span class="bt"><i style="width:' + Math.max(3, (r[1] / (total || 1)) * 100).toFixed(1) + '%"></i></span><span class="bv">' + money(r[1], 'PEN') + '</span></div>').join('') + '</div>';
 }
-function cuadre() {
+// Presupuesto: gasto del mes (real + proyectado) contra el tope de cada categoria (soles).
+function presupRows(ms) {
+  return Object.keys(S.presup).map(cat => {
+    const tope = S.presup[cat], real = ms.real.egr[cat] || 0, total = ms.total.egr[cat] || 0;
+    const pct = tope > 0 ? total / tope : 0;
+    return { cat, tope, real, total, pct, nivel: pct >= 1 ? 'over' : pct >= 0.8 ? 'warn' : 'ok' };
+  }).sort((a, b) => b.pct - a.pct);
+}
+function presupBar(r) {
+  const c = r.nivel === 'over' ? 'var(--red)' : r.nivel === 'warn' ? 'var(--orange)' : 'var(--green)';
+  return '<div class="presup"><div class="pr-top"><span>' + catIcon(r.cat) + ' ' + esc(r.cat) + '</span><span><b class="' + (r.nivel === 'over' ? 'neg' : '') + '">' + money(r.total, 'PEN') + '</b> <small class="muted">de ' + money(r.tope, 'PEN') + '</small></span></div>' +
+    '<div class="prog" style="--c:' + c + '"><i class="p-proy" style="width:' + Math.min(100, r.pct * 100).toFixed(1) + '%"></i><i class="p-real" style="width:' + Math.min(100, (r.tope ? r.real / r.tope : 0) * 100).toFixed(1) + '%"></i></div>' +
+    '<div class="pr-sub small muted">' + (r.nivel === 'over' ? '<span class="neg">Te pasaste por ' + money(r.total - r.tope, 'PEN') + '</span>' : 'Quedan ' + money(r.tope - r.total, 'PEN')) + ' · ' + Math.round(r.pct * 100) + '%</div></div>';
+}
+function presupCard(ms) {
+  const rows = presupRows(ms);
+  if (!rows.length) return '<button class="card cta-card" data-act="openPresup"><span class="al-ico">🎯</span><span><b>Define presupuestos</b><br><small class="muted">Pon un tope mensual por categoría y te avisamos al llegar al 80%.</small></span></button>';
+  return '<section class="card"><div class="card-head"><h2>Presupuestos del mes</h2><button class="link" data-act="openPresup">Editar</button></div>' + rows.map(presupBar).join('') + '</section>';
+}
+function cuadre(cur) {
+  cur = cur || 'PEN';
   const sat = satOf(today());
   let banco = 0, app = 0, hayDatos = false;
-  const det = activeCuentas('Corriente').map(c => {
+  const det = activeCuentas('Corriente').filter(c => (c.moneda || 'PEN') === cur).map(c => {
     const s = S.saldos[c.id];
     const a = ctaBalance(c.id, true, sat);
     if (s) { hayDatos = true; banco += s.saldo; }
     app += a;
     return { c, saldo: s, app: a };
   });
-  return { banco, app, dif: banco - app, hayDatos, det };
+  return { banco, app, dif: banco - app, hayDatos, det, cur };
 }
 
 /* ============================ CALENDARIO ============================ */
@@ -604,7 +683,7 @@ function deficitDays(monthDate, pred) {
 }
 function monthStats(monthDate, pred) {
   const mk = monthKey(monthDate), t = today();
-  const bucket = () => ({ ing: {}, egr: {}, sumIng: 0, sumEgr: 0, ini: {}, sumIni: 0 });
+  const bucket = () => ({ ing: {}, egr: {}, sumIng: 0, sumEgr: 0, ini: {}, sumIni: 0, aho: 0, cam: 0 });
   const st = { total: bucket(), real: bucket(), proy: bucket(), leg: { rp: 0, rn: 0, pp: 0, pn: 0, v: 0 } };
   S.movs.forEach(m => {
     if (!m.fecha.startsWith(mk) || !pred(m)) return;
@@ -619,8 +698,15 @@ function monthStats(monthDate, pred) {
     if (real) { if (m.monto >= 0) st.leg.rp += m.monto; else st.leg.rn -= m.monto; }
     else if (m.fecha < t) st.leg.v += m.monto;
     else { if (m.monto >= 0) st.leg.pp += m.monto; else st.leg.pn -= m.monto; }
-    if (m.enlace && isInternalFor(m, pred)) return; // transferencia entre dos cuentas del flujo: no es ingreso ni gasto
     const k = real ? 'real' : 'proy';
+    if (m.enlace) {
+      const p = partnerOf(m);
+      // Hacia/desde una cuenta de ahorro: es ahorro (o retiro de ahorro), no gasto ni ingreso.
+      if (p && isAhorro(p.cuentaId)) { [st.total, st[k]].forEach(o => { o.aho -= m.monto; }); return; }
+      // Hacia/desde una cuenta corriente de otra moneda: es un cambio de moneda, tampoco es gasto.
+      if (p && curOf(p.cuentaId) !== curOf(m.cuentaId)) { [st.total, st[k]].forEach(o => { o.cam -= m.monto; }); return; }
+      if (isInternalFor(m, pred)) return; // entre dos cuentas del flujo: no es ingreso ni gasto
+    }
     [st.total, st[k]].forEach(o => {
       if (m.monto >= 0) { o.ing[m.categoria] = (o.ing[m.categoria] || 0) + m.monto; o.sumIng += m.monto; }
       else { o.egr[m.categoria] = (o.egr[m.categoria] || 0) - m.monto; o.sumEgr -= m.monto; }
@@ -676,7 +762,8 @@ function viewCalendario() {
   const md = S.month, y = md.getFullYear(), mo = md.getMonth();
   const mk = monthKey(md);
   const corr = activeCuentas('Corriente');
-  if (S.filter && !corr.some(c => c.id === S.filter)) S.filter = '';
+  if (S.moneda === 'USD' && !hasUSD()) S.moneda = 'PEN';
+  if (S.filter && !corr.some(c => c.id === S.filter && (c.moneda || 'PEN') === S.moneda)) S.filter = '';
   const fijosOk = S.fijosAplicados.some(a => a.mes === mk);
 
   let model;
@@ -700,9 +787,11 @@ function viewCalendario() {
     '<button class="pill ' + (fijosOk ? 'done' : 'accent') + '" data-act="openFijos">' + (fijosOk ? 'Fijos ✓' : 'Fijos') + '</button>' +
     '<button class="icon-btn" data-act="openResumen" aria-label="Resumen del mes">' + IC.chart + '</button>' +
     '<button class="icon-btn" data-act="openSearch" aria-label="Buscar">' + IC.search + '</button></div></header>';
-  if (corr.length > 1) {
-    h += '<div class="chips-row"><button class="fchip' + (!S.filter ? ' on' : '') + '" data-act="filter" data-id="">Todas</button>' +
-      corr.map(c => '<button class="fchip' + (S.filter === c.id ? ' on' : '') + '" data-act="filter" data-id="' + c.id + '" style="--c:' + c.color + '"><i></i>' + esc(c.nombre) + '</button>').join('') + '</div>';
+  const corrCur = corr.filter(c => (c.moneda || 'PEN') === S.moneda);
+  if (corrCur.length > 1 || hasUSD()) {
+    h += '<div class="chips-row">' + (hasUSD() ? '<div class="seg sm cur-seg"><button class="' + (S.moneda === 'PEN' ? 'on' : '') + '" data-act="moneda" data-v="PEN">S/</button><button class="' + (S.moneda === 'USD' ? 'on' : '') + '" data-act="moneda" data-v="USD">US$</button></div>' : '') +
+      (corrCur.length > 1 ? '<button class="fchip' + (!S.filter ? ' on' : '') + '" data-act="filter" data-id="">Todas</button>' +
+      corrCur.map(c => '<button class="fchip' + (S.filter === c.id ? ' on' : '') + '" data-act="filter" data-id="' + c.id + '" style="--c:' + c.color + '"><i></i>' + esc(c.nombre) + '</button>').join('') : '') + '</div>';
   }
   const venc = vencidos();
   if (venc.length || model.deficits.length) {
@@ -766,7 +855,7 @@ function chipHtml(m, locked) {
   return '<div class="chip ' + movClass(m) + sel + '" data-act="chip" data-id="' + m.id + '"' + (canEdit ? ' draggable="true" data-chip="' + m.id + '"' : '') +
     ' title="' + esc(m.categoria + (m.detalle ? ' - ' + m.detalle : '') + ' · ' + ctaName(m.cuentaId)) + '">' +
     (canEdit ? '<button class="chip-x" data-act="quickDel" data-id="' + m.id + '" aria-label="Eliminar">' + IC.x + '</button>' : '') +
-    '<span class="chip-cat">' + esc(m.detalle && m.categoria === CAT_TRANSF ? m.detalle : m.categoria) + '</span>' +
+    '<span class="chip-cat">' + catIcon(m.categoria) + ' ' + esc(m.detalle && m.categoria === CAT_TRANSF ? m.detalle : m.categoria) + '</span>' +
     '<span class="chip-amt">' + compact(m.monto) + '</span>' +
     (m.estado === 'Proyectado' && canEdit ? '<button class="chip-ok" data-act="exec" data-id="' + m.id + '" aria-label="Ejecutar">' + IC.check + '</button>' : '') +
     '</div>';
@@ -787,11 +876,14 @@ function summaryBody(md) {
   const o = ms[S.sumTab];
   const ini = S.sumTab === 'total' ? balanceUpTo(dAntes, false) : S.sumTab === 'real' ? balanceUpTo(dAntes, true) : null;
   const fin = S.sumTab === 'total' ? balanceUpTo(dFin, false) : S.sumTab === 'real' ? balanceUpTo(dFin, true) : null;
-  const list = (obj, cls) => {
+  const list = (obj, cls, conTope) => {
     const ks = Object.keys(obj).sort((a, b) => obj[b] - obj[a]);
-    return ks.length ? ks.map(k => '<div class="kv"><span>' + esc(k) + '</span><b class="' + cls + '">' + money(obj[k]) + '</b></div>').join('') : '<p class="muted small">Sin movimientos</p>';
+    return ks.length ? ks.map(k => {
+      const tope = conTope && S.moneda === 'PEN' ? S.presup[k] : 0;
+      return '<div class="kv"><span>' + catIcon(k) + ' ' + esc(k) + (tope ? ' <small class="' + (obj[k] > tope ? 'neg' : 'muted') + '">de ' + money(tope) + '</small>' : '') + '</span><b class="' + cls + '">' + money(obj[k]) + '</b></div>';
+    }).join('') : '<p class="muted small">Sin movimientos</p>';
   };
-  let h = '';
+  let h = hasUSD() ? '<div class="seg cur-seg wide">' + [['PEN', 'Soles (S/)'], ['USD', 'Dólares (US$)']].map(x => '<button class="' + (S.moneda === x[0] ? 'on' : '') + '" data-act="moneda" data-v="' + x[0] + '">' + x[1] + '</button>').join('') + '</div>' : '';
   if (S.filter) h += '<div class="banner warn">🔎 <span>Mostrando solo <b>' + esc(ctaName(S.filter)) + '</b>. <button class="link" data-act="filter" data-id="">Ver todas las cuentas</button></span></div>';
   // Aviso: gastos/ingresos hechos directamente en cuentas de ahorro no entran en este resumen.
   const mk = monthKey(md);
@@ -802,12 +894,14 @@ function summaryBody(md) {
       ') y no se incluyen aquí. Si son cuentas del día a día, cámbialas a <b>Corriente</b> en Más → Cuentas.</span></div>';
   }
   h += '<div class="seg">' + tabs.map(tb => '<button class="' + (S.sumTab === tb[0] ? 'on' : '') + '" data-act="sumTab" data-t="' + tb[0] + '">' + tb[1] + '</button>').join('') + '</div>';
-  h += '<div class="summary"><div class="sum-grid"><div><h4 class="pos">Ingresos</h4>' + list(o.ing, 'pos') + '</div><div><h4 class="neg">Egresos</h4>' + list(o.egr, 'neg') + '</div>' +
+  h += '<div class="summary"><div class="sum-grid"><div><h4 class="pos">Ingresos</h4>' + list(o.ing, 'pos') + '</div><div><h4 class="neg">Egresos</h4>' + list(o.egr, 'neg', true) + '</div>' +
     '<div class="sum-box">' + (ini != null ? '<div class="kv"><span>Saldo inicial del mes</span><b class="' + (ini < 0 ? 'neg' : '') + '">' + money(ini) + '</b></div>' : '') +
     (o.sumIni ? '<div class="kv"><span>Saldos iniciales de cuentas</span><b class="blue">' + moneyPlus(o.sumIni) + '</b></div>' +
       Object.keys(o.ini).map(k => '<div class="kv sub"><span>' + esc(k) + '</span><span>' + moneyPlus(o.ini[k]) + '</span></div>').join('') : '') +
     '<div class="kv"><span>Total ingresos</span><b class="pos">' + money(o.sumIng) + '</b></div><div class="kv"><span>Total egresos</span><b class="neg">' + money(o.sumEgr) + '</b></div>' +
-    '<div class="kv big"><span>Flujo neto</span><b class="' + (o.sumIng - o.sumEgr >= 0 ? 'pos' : 'neg') + '">' + moneyPlus(o.sumIng - o.sumEgr) + '</b></div>' +
+    (Math.abs(o.aho) > 0.004 ? '<div class="kv"><span>' + (o.aho >= 0 ? '🐷 Enviado a ahorro' : '🐷 Retirado de ahorro') + '</span><b class="blue">' + moneyPlus(-o.aho) + '</b></div>' : '') +
+    (Math.abs(o.cam) > 0.004 ? '<div class="kv"><span>💱 Cambio de moneda</span><b class="blue">' + moneyPlus(-o.cam) + '</b></div>' : '') +
+    '<div class="kv big"><span>Flujo neto</span><b class="' + (o.sumIng - o.sumEgr - o.aho - o.cam >= 0 ? 'pos' : 'neg') + '">' + moneyPlus(o.sumIng - o.sumEgr - o.aho - o.cam) + '</b></div>' +
     (fin != null ? '<div class="kv big"><span>Saldo final del mes</span><b class="' + (fin < 0 ? 'neg' : '') + '">' + money(fin) + '</b></div>' : '') + '</div></div></div>';
   return h;
 }
@@ -826,35 +920,41 @@ function movRow(m, o) {
   else if (o.order) acts = '<button class="mini" data-act="orderUp" data-id="' + m.id + '">' + IC.up + '</button><button class="mini" data-act="orderDown" data-id="' + m.id + '">' + IC.down + '</button>';
   else if (!locked && !o.noActs) acts = (m.estado === 'Proyectado' ? '<button class="mini ok" data-act="exec" data-id="' + m.id + '" aria-label="Ejecutar">' + IC.check + '</button>' : '') +
     '<button class="mini del" data-act="quickDel" data-id="' + m.id + '" aria-label="Eliminar">' + IC.x + '</button>';
-  return '<div class="mv ' + movClass(m) + (sel ? ' sel' : '') + '" data-act="' + (S.selMode ? 'toggleSel' : 'editMov') + '" data-id="' + m.id + '" data-lp="' + m.id + '">' +
-    '<span class="mv-bar"></span>' +
+  // Deslizar: a la derecha = ejecutar (si es proyectado), a la izquierda = eliminar.
+  const swipe = !locked && !S.selMode && !o.order && !o.noActs;
+  const cur = curOf(m.cuentaId);
+  return '<div class="mvw"' + (swipe ? ' data-swipe="' + m.id + '" data-exec="' + (m.estado === 'Proyectado' ? 1 : 0) + '"' : '') + '>' +
+    (swipe ? '<div class="sw-bg"><span class="sw-ok">' + IC.check + ' Ejecutar</span><span class="sw-del">Eliminar ' + IC.x + '</span></div>' : '') +
+    '<div class="mv ' + movClass(m) + (sel ? ' sel' : '') + '" data-act="' + (S.selMode ? 'toggleSel' : 'editMov') + '" data-id="' + m.id + '" data-lp="' + m.id + '">' +
+    '<span class="mv-bar"></span><span class="mv-ico">' + catIcon(m.categoria) + '</span>' +
     '<div class="mv-main"><div class="mv-t">' + esc(title) + (locked ? ' <span class="tag">🔒</span>' : '') + '</div>' +
-      '<div class="mv-s">' + (o.date ? esc(shortDate(m.fecha)) + ' · ' : '') + '<span class="dot" style="--c:' + ctaColor(m.cuentaId) + '"></span>' + esc(ctaName(m.cuentaId)) +
+      '<div class="mv-s">' + (m.adjunto ? '📎 ' : '') + (o.date ? esc(shortDate(m.fecha)) + ' · ' : '') + '<span class="dot" style="--c:' + ctaColor(m.cuentaId) + '"></span>' + esc(ctaName(m.cuentaId)) +
       (meta ? ' · ' + esc((meta.icono || '🎯') + ' ' + meta.nombre) : '') + (m.detalle && m.categoria !== CAT_TRANSF ? ' · ' + esc(m.detalle) : '') + '</div></div>' +
-    '<div class="mv-r"><div class="mv-amt ' + (m.monto >= 0 ? 'pos' : 'neg') + '">' + moneyPlus(m.monto) + '</div><div class="mv-est">' + est + (o.bal != null ? ' · ' + money(o.bal) : '') + '</div></div>' +
-    (acts ? '<div class="mv-acts">' + acts + '</div>' : '') + '</div>';
+    '<div class="mv-r"><div class="mv-amt ' + (m.monto >= 0 ? 'pos' : 'neg') + '">' + moneyPlus(m.monto, cur) + '</div><div class="mv-est">' + est + (o.bal != null ? ' · ' + money(o.bal, cur) : '') + '</div></div>' +
+    (acts ? '<div class="mv-acts">' + acts + '</div>' : '') + '</div></div>';
 }
 
 /* ============================ AHORRO ============================ */
 function viewAhorro() {
   const aho = S.cuentas.filter(c => c.tipo === 'Ahorro' && c.activa);
-  let h = topbar('Ahorro', aho.length ? '<button class="pill accent" data-act="newMeta">+ Meta</button>' : '');
+  let h = topbar('Ahorro', eyeBtn() + (aho.length ? '<button class="pill accent" data-act="newMeta">+ Meta</button>' : ''));
   if (!aho.length) {
     return h + '<section class="card onboard"><div class="onb-emoji">🐷</div><h2>Tus ahorros, aparte</h2>' +
       '<p>Crea una cuenta de ahorro. Su dinero no se mezcla con tu flujo del día a día y puedes repartirlo en varias metas (viaje, emergencias, etc.).</p>' +
       '<button class="btn primary big" data-act="newCuenta" data-tipo="Ahorro">Crear cuenta de ahorro</button></section>';
   }
-  const total = sum(S.movs.filter(m => m.estado === 'Real' && isAhorro(m.cuentaId)), m => m.monto);
-  const totalP = sum(S.movs.filter(m => isAhorro(m.cuentaId)), m => m.monto);
-  h += '<section class="hero savings"><div class="hero-lbl">Total ahorrado</div><div class="hero-amt">' + money(total) + '</div>' +
-    (Math.abs(totalP - total) > 0.004 ? '<div class="hero-row"><span>Con aportes proyectados</span><b>' + money(totalP) + '</b></div>' : '') + '</section>';
+  const tot = (cur, real) => sum(S.movs.filter(m => (!real || m.estado === 'Real') && isAhorro(m.cuentaId) && curOf(m.cuentaId) === cur), m => m.monto);
+  const total = tot('PEN', true), totalP = tot('PEN', false);
+  h += '<section class="hero savings"><div class="hero-lbl">Total ahorrado</div><div class="hero-amt">' + countNum('ahoT', total, 'PEN') + '</div>' +
+    (Math.abs(totalP - total) > 0.004 ? '<div class="hero-row"><span>Con aportes proyectados</span><b>' + money(totalP, 'PEN') + '</b></div>' : '') +
+    (aho.some(c => c.moneda === 'USD') ? '<div class="hero-row usd"><span>En dólares</span><b>' + countNum('ahoU', tot('USD', true), 'USD') + '</b></div>' : '') + '</section>';
   aho.forEach(c => {
     const bal = ctaBalance(c.id, true);
     const sinAsig = sum(S.movs.filter(m => m.cuentaId === c.id && m.estado === 'Real' && !m.metaId), m => m.monto);
     const metas = S.metas.filter(m => m.cuentaId === c.id);
     const act = metas.filter(m => m.estado !== 'Archivada'), arch = metas.filter(m => m.estado === 'Archivada');
-    h += '<section class="card acct" style="--c:' + c.color + '"><div class="acct-head"><div><div class="acct-name">' + esc(c.nombre) + '</div><div class="muted small">Sin asignar a metas: ' + money(sinAsig) + '</div></div>' +
-      '<div class="acct-bal">' + money(bal) + '</div></div>' +
+    h += '<section class="card acct" style="--c:' + c.color + '"><div class="acct-head"><div><div class="acct-name">' + esc(c.nombre) + (c.moneda === 'USD' ? ' <span class="tag">US$</span>' : '') + '</div><div class="muted small">Sin asignar a metas: ' + money(sinAsig, c.moneda) + '</div></div>' +
+      '<div class="acct-bal">' + money(bal, c.moneda) + '</div></div>' +
       '<div class="btn-row"><button class="btn sm" data-act="deposit" data-id="' + c.id + '">Depositar</button><button class="btn sm" data-act="withdraw" data-id="' + c.id + '">Retirar</button>' +
       '<button class="btn sm ghost" data-act="openCuentaHist" data-id="' + c.id + '">Historial</button></div>' +
       (act.length ? act.map(metaCard).join('') : '<p class="muted small center">Esta cuenta no tiene metas todavía.</p>') +
@@ -872,7 +972,8 @@ function metaMini(meta) {
     '<b>' + Math.round(st.pct * 100) + '%</b></span>' + progressBar(st, ctaColor(meta.cuentaId)) + '</span></button>';
 }
 function metaCard(meta) {
-  const st = metaStats(meta);
+  const st = metaStats(meta), cur = curOf(meta.cuentaId);
+  const money = n => window.money(n, cur);
   let sub;
   if (st.done) sub = '<span class="pos"><b>¡Meta cumplida!</b> 🎉</span>';
   else if (meta.fechaLimite && st.vencida) sub = '<span class="neg">Fecha límite vencida · faltan ' + money(st.falta) + '</span>';
@@ -890,14 +991,21 @@ function metaCard(meta) {
 function viewMas() {
   const venc = vencidos().length;
   const item = (act, ico, label, sub, badge) => '<button class="menu-item" data-act="' + act + '"><span class="mi-ico">' + ico + '</span><span class="mi-body"><span>' + label + '</span>' + (sub ? '<small>' + sub + '</small>' : '') + '</span>' + (badge ? '<span class="badge">' + badge + '</span>' : '') + '<span class="mi-chev">' + IC.chevR + '</span></button>';
-  return topbar('Más', syncChip()) +
+  const nPres = Object.keys(S.presup).length;
+  const lk = store.get('lock', null);
+  return topbar('Más', eyeBtn() + syncChip()) +
     '<div class="menu">' +
       item('openCuentas', '🏦', 'Cuentas', S.cuentas.length + ' cuenta(s)') +
-      item('openCats', '🏷️', 'Categorías', S.cats.length + ' categoría(s)') +
+      item('openCats', '🏷️', 'Categorías', S.cats.length + ' categoría(s) · toca el ícono para cambiarlo') +
+      item('openPresup', '🎯', 'Presupuestos', nPres ? nPres + ' categoría(s) con tope mensual' : 'Pon topes mensuales por categoría') +
       item('openFijos', '📌', 'Gastos fijos', 'Plantilla mensual') +
       item('openCuadre', '⚖️', 'Cuadre con el banco', 'Compara con el saldo real') +
       item('openVencidos', '⏰', 'Proyectados vencidos', '', venc || '') +
       item('openSearch', '🔍', 'Buscar movimientos', '') +
+    '</div><div class="menu">' +
+      item('openApariencia', '🎨', 'Apariencia', 'Color de acento y tema claro / oscuro') +
+      item('openSeguridad', '🔒', 'Bloqueo con Face ID / PIN', lk && lk.pinHash ? (lk.credId ? 'Activo · Face ID + PIN' : 'Activo · PIN') : 'Desactivado') +
+      item('togglePrivacy', S.privacy ? '🙈' : '👁️', S.privacy ? 'Mostrar montos' : 'Ocultar montos', 'También con el ojo de arriba') +
     '</div><div class="menu">' +
       item('openPassword', '🔑', 'Cambiar contraseña', S.user ? esc(S.user.usuario) : '') +
       item('forceSync', '🔄', 'Sincronizar ahora', esc(syncLabel())) +
@@ -927,8 +1035,9 @@ function openDay(d) {
     update: sh => {
       const st = sh.state;
       const all = S.movs.filter(m => m.fecha === d).sort(sortByOrden);
-      const net = sum(all.filter(m => isCorr(m.cuentaId)), m => m.monto); // como el flujo del calendario: solo cuentas corrientes
-      const bal = balanceUpTo(d, false, m => isCorr(m.cuentaId));
+      const enFlujo = m => isCorr(m.cuentaId) && curOf(m.cuentaId) === S.moneda; // como el calendario: corrientes de la moneda elegida
+      const net = sum(all.filter(enFlujo), m => m.monto);
+      const bal = balanceUpTo(d, false, enFlujo);
       const cats = {};
       all.forEach(m => { const k = (m.monto >= 0 ? 'Ingresos · ' : 'Salidas · ') + m.categoria; cats[k] = (cats[k] || 0) + m.monto; });
       const q = st.q.toLowerCase();
@@ -967,12 +1076,18 @@ function openMovForm(p) {
     modo: m.enlace ? 'transfer' : (m.tipo === 'Salida' ? 'gasto' : 'ingreso'),
     fecha: m.fecha, monto: Math.abs(m.monto).toFixed(2), cuentaId: m.cuentaId, categoria: m.categoria, detalle: m.detalle, estado: m.estado, metaId: m.metaId,
     desdeId: m.enlace ? (m.monto < 0 ? m.cuentaId : (partner || {}).cuentaId) : '', haciaId: m.enlace ? (m.monto < 0 ? (partner || {}).cuentaId : m.cuentaId) : '',
-    metaDesdeId: m.enlace ? (m.monto < 0 ? m.metaId : (partner || {}).metaId) : '', metaHaciaId: m.enlace ? (m.monto < 0 ? (partner || {}).metaId : m.metaId) : ''
+    metaDesdeId: m.enlace ? (m.monto < 0 ? m.metaId : (partner || {}).metaId) : '', metaHaciaId: m.enlace ? (m.monto < 0 ? (partner || {}).metaId : m.metaId) : '',
+    montoHacia: ''
   } : {
     modo: p.modo || (p.categoria === CAT_SALDO_INI ? 'ingreso' : 'gasto'),
     fecha: p.fecha || today(), monto: '', cuentaId: p.cuentaId || (S.filter || firstCorr), categoria: p.categoria || '', detalle: '', estado: '', metaId: p.metaId || '',
-    desdeId: p.desdeId || firstCorr, haciaId: p.haciaId || '', metaDesdeId: p.metaDesdeId || '', metaHaciaId: p.metaHaciaId || ''
+    desdeId: p.desdeId || firstCorr, haciaId: p.haciaId || '', metaDesdeId: p.metaDesdeId || '', metaHaciaId: p.metaHaciaId || '', montoHacia: ''
   };
+  if (m && m.enlace && partner) {
+    const out = m.monto < 0 ? m : partner, inn = m.monto < 0 ? partner : m;
+    F.monto = Math.abs(out.monto).toFixed(2);
+    F.montoHacia = Math.abs(inn.monto).toFixed(2);
+  }
   if (!F.haciaId && F.modo === 'transfer') F.haciaId = (activeCuentas().find(c => c.id !== F.desdeId) || {}).id || '';
   if (!F.estado) F.estado = F.fecha > today() ? 'Proyectado' : 'Real';
   if (!m && !activeCuentas().length) { toast('Primero crea una cuenta.', 'error'); return openCuentaForm({ tipo: 'Corriente' }); }
@@ -992,11 +1107,17 @@ function openMovForm(p) {
       } else if (!m.enlace) {
         h += '<div class="seg big">' + [['gasto', 'Gasto'], ['ingreso', 'Ingreso']].map(x => '<button type="button" class="' + (f.modo === x[0] ? 'on ' + x[0] : '') + '" data-act="movModo" data-v="' + x[0] + '">' + x[1] + '</button>').join('') + '</div>';
       }
-      h += '<label class="amount ' + f.modo + '"><span>' + esc(CFG.CURRENCY) + '</span><input name="monto" inputmode="decimal" autocomplete="off" placeholder="0.00" value="' + esc(f.monto) + '" required></label>';
+      const curMain = curOf(f.modo === 'transfer' ? f.desdeId : f.cuentaId);
+      h += '<label class="amount ' + f.modo + '"><span>' + esc(sym(curMain)) + '</span><input name="monto" inputmode="decimal" autocomplete="off" placeholder="0.00" value="' + esc(f.monto) + '" required></label>';
       if (f.modo === 'transfer') {
         h += '<div class="xfer"><label class="fld"><span>Desde</span><select name="desdeId" data-change="movCta">' + cuentaOpts(f.desdeId, m ? 'all' : 'active') + '</select></label>' +
           '<span class="xfer-arrow">' + IC.arrow + '</span>' +
           '<label class="fld"><span>Hacia</span><select name="haciaId" data-change="movCta">' + cuentaOpts(f.haciaId, m ? 'all' : 'active') + '</select></label></div>';
+        if (f.desdeId && f.haciaId && curOf(f.desdeId) !== curOf(f.haciaId)) {
+          h += '<div class="fld"><span>Monto que llega a ' + esc(ctaName(f.haciaId)) + ' (cambio de moneda)</span><label class="amount sm transfer"><span>' + esc(sym(curOf(f.haciaId))) + '</span>' +
+            '<input name="montoHacia" inputmode="decimal" autocomplete="off" placeholder="0.00" value="' + esc(f.montoHacia) + '" required data-change="movCta"></label>' +
+            (parseAmount(f.monto) > 0 && parseAmount(f.montoHacia) > 0 ? '<small class="muted">Tipo de cambio: ' + (curOf(f.desdeId) === 'PEN' ? (parseAmount(f.monto) / parseAmount(f.montoHacia)) : (parseAmount(f.montoHacia) / parseAmount(f.monto))).toFixed(4) + '</small>' : '') + '</div>';
+        }
         if (isAhorro(f.desdeId) && metasDe(f.desdeId).length) h += '<label class="fld"><span>Retirar de la meta</span><select name="metaDesdeId">' + metaOpts(f.desdeId, f.metaDesdeId) + '</select></label>';
         if (isAhorro(f.haciaId) && metasDe(f.haciaId).length) h += '<label class="fld"><span>Asignar a la meta</span><select name="metaHaciaId">' + metaOpts(f.haciaId, f.metaHaciaId) + '</select></label>';
       } else {
@@ -1007,6 +1128,15 @@ function openMovForm(p) {
       h += '<div class="row2"><label class="fld"><span>Fecha</span><input type="date" name="fecha" value="' + esc(f.fecha) + '" data-change="movFecha" required></label>' +
         '<div class="fld"><span>Estado</span><div class="seg">' + [['Real', 'Real'], ['Proyectado', 'Proyectado']].map(x => '<button type="button" class="' + (f.estado === x[0] ? 'on' : '') + '" data-act="movEstado" data-v="' + x[0] + '">' + x[1] + '</button>').join('') + '</div></div></div>';
       h += '<label class="fld"><span>Detalle</span><input name="detalle" value="' + esc(f.detalle) + '" placeholder="Opcional" autocomplete="off"></label>';
+      // Comprobante (foto)
+      const foto = sh.state.foto;
+      if (m && m.adjunto) {
+        h += '<div class="attach-row"><button type="button" class="btn ghost" data-act="verAdjunto" data-id="' + m.id + '">📎 Ver comprobante</button>' +
+          (locked ? '' : '<label class="btn ghost">Cambiar<input type="file" accept="image/*" data-change="movFoto" hidden></label><button type="button" class="btn danger-ghost" data-act="quitarAdjunto" data-id="' + m.id + '">Quitar</button>') + '</div>';
+      } else if (!locked) {
+        h += '<div class="attach-row">' + (foto ? '<img class="attach-thumb" src="' + foto.url + '" alt=""><span class="muted small">Foto lista, se guarda al registrar</span><button type="button" class="mini del" data-act="fotoQuitar" aria-label="Quitar foto">' + IC.x + '</button>'
+          : '<label class="btn ghost wide-l">📎 Adjuntar comprobante (foto)<input type="file" accept="image/*" data-change="movFoto" hidden></label>') + '</div>';
+      }
       if (m && m.por) h += '<p class="muted small">Última modificación: ' + esc(m.por) + (m.en ? ' · ' + esc(String(m.en).slice(0, 16)) : '') + '</p>';
       if (!locked) {
         h += '<button class="btn primary big" type="submit">' + (m ? 'Guardar cambios' : 'Registrar') + '</button>';
@@ -1025,7 +1155,7 @@ function openMovForm(p) {
 }
 function readMovForm(sh) {
   const form = $('form', sh.body), f = sh.state.F;
-  ['monto', 'fecha', 'detalle', 'cuentaId', 'categoria', 'metaId', 'desdeId', 'haciaId', 'metaDesdeId', 'metaHaciaId'].forEach(k => { if (form[k]) f[k] = form[k].value; });
+  ['monto', 'montoHacia', 'fecha', 'detalle', 'cuentaId', 'categoria', 'metaId', 'desdeId', 'haciaId', 'metaDesdeId', 'metaHaciaId'].forEach(k => { if (form[k]) f[k] = form[k].value; });
   if (form.metaId == null) f.metaId = ''; // la cuenta elegida no tiene metas
   if (form.metaDesdeId == null) f.metaDesdeId = '';
   if (form.metaHaciaId == null) f.metaHaciaId = '';
@@ -1057,37 +1187,107 @@ async function submitMov(sh) {
   const m = sh.state.edit;
   const monto = parseAmount(f.monto);
   if (!(monto > 0)) return toast('Ingresa un monto mayor a 0.', 'error');
+  // Transferencia entre monedas: "monto" sale de Desde y "montoHacia" llega a Hacia.
+  const cross = f.modo === 'transfer' && curOf(f.desdeId) !== curOf(f.haciaId);
+  const montoIn = cross ? parseAmount(f.montoHacia) : monto;
+  if (cross && !(montoIn > 0)) return toast('Indica cuánto llega a ' + ctaName(f.haciaId) + '.', 'error');
   const btn = $('button[type=submit]', sh.body);
   const label = btn.textContent;
   btn.disabled = true;
   btn.textContent = 'Guardando...';
+  const antes = presupSnapshot();
   try {
+    let nuevoId = null;
     if (m) {
+      const ownOut = m.monto < 0;
+      const ownMonto = m.enlace ? (ownOut ? monto : montoIn) : monto;
+      const otherMonto = ownOut ? montoIn : monto;
       await write('updateMovement', [{ id: m.id, fecha: f.fecha, tipo: f.modo === 'gasto' ? 'Salida' : 'Ingreso', cuentaId: f.modo === 'transfer' ? m.cuentaId : f.cuentaId,
-        categoria: f.categoria, monto, detalle: f.detalle, estado: f.estado, metaId: f.modo === 'transfer' ? (m.monto < 0 ? f.metaDesdeId : f.metaHaciaId) : f.metaId }], { ok: 'Cambios guardados.' });
-      // En transferencias, las cuentas y la meta del otro lado se editan en su propio movimiento.
+        categoria: f.categoria, monto: ownMonto, montoPartner: m.enlace ? otherMonto : null, detalle: f.detalle, estado: f.estado,
+        metaId: f.modo === 'transfer' ? (ownOut ? f.metaDesdeId : f.metaHaciaId) : f.metaId }], { ok: 'Cambios guardados.' });
+      // En transferencias, la cuenta y la meta del otro lado se guardan en su propio movimiento.
       if (m.enlace) {
         const p = partnerOf(getMov(m.id) || m);
-        const newOwn = m.monto < 0 ? f.desdeId : f.haciaId, newOther = m.monto < 0 ? f.haciaId : f.desdeId;
-        const otherMeta = m.monto < 0 ? f.metaHaciaId : f.metaDesdeId;
+        const newOwn = ownOut ? f.desdeId : f.haciaId, newOther = ownOut ? f.haciaId : f.desdeId;
+        const otherMeta = ownOut ? f.metaHaciaId : f.metaDesdeId;
         if (newOwn === newOther) throw new Error('Elige dos cuentas distintas.');
         if (p && (p.cuentaId !== newOther || (p.metaId || '') !== (otherMeta || ''))) {
-          await write('updateMovement', [{ id: p.id, fecha: f.fecha, cuentaId: newOther, monto, detalle: p.detalle, estado: f.estado, metaId: otherMeta }]);
+          await write('updateMovement', [{ id: p.id, fecha: f.fecha, cuentaId: newOther, monto: otherMonto, montoPartner: ownMonto, detalle: p.detalle, estado: f.estado, metaId: otherMeta }]);
         }
-        if (newOwn !== m.cuentaId) await write('updateMovement', [{ id: m.id, fecha: f.fecha, cuentaId: newOwn, monto, detalle: f.detalle, estado: f.estado, metaId: m.monto < 0 ? f.metaDesdeId : f.metaHaciaId }]);
+        if (newOwn !== m.cuentaId) await write('updateMovement', [{ id: m.id, fecha: f.fecha, cuentaId: newOwn, monto: ownMonto, montoPartner: otherMonto, detalle: f.detalle, estado: f.estado, metaId: ownOut ? f.metaDesdeId : f.metaHaciaId }]);
       }
     } else if (f.modo === 'transfer') {
       if (!f.desdeId || !f.haciaId || f.desdeId === f.haciaId) throw new Error('Elige dos cuentas distintas.');
-      await write('addTransfer', [{ desdeId: f.desdeId, haciaId: f.haciaId, monto, fecha: f.fecha, estado: f.estado, detalle: f.detalle, metaDesdeId: f.metaDesdeId, metaHaciaId: f.metaHaciaId }], { ok: 'Transferencia registrada.' });
+      const r = await write('addTransfer', [{ desdeId: f.desdeId, haciaId: f.haciaId, monto, montoHacia: montoIn, fecha: f.fecha, estado: f.estado, detalle: f.detalle, metaDesdeId: f.metaDesdeId, metaHaciaId: f.metaHaciaId }], { ok: 'Transferencia registrada.' });
+      nuevoId = r && r.patches && r.patches[0] && r.patches[0].id;
     } else {
-      await write('addMovement', [{ fecha: f.fecha, tipo: f.modo === 'gasto' ? 'Salida' : 'Ingreso', cuentaId: f.cuentaId, categoria: f.categoria, monto, detalle: f.detalle, estado: f.estado, metaId: f.metaId }], { ok: 'Movimiento registrado.' });
+      const r = await write('addMovement', [{ fecha: f.fecha, tipo: f.modo === 'gasto' ? 'Salida' : 'Ingreso', cuentaId: f.cuentaId, categoria: f.categoria, monto, detalle: f.detalle, estado: f.estado, metaId: f.metaId }], { ok: 'Movimiento registrado.' });
+      nuevoId = r && r.patches && r.patches[0] && r.patches[0].id;
     }
+    const foto = sh.state.foto;
     closeSheet(sh);
+    avisarPresupuesto(antes);
+    if (foto && nuevoId) subirFoto(nuevoId, foto);
   } catch (e) {
     if (!(e instanceof ApiError)) toast(e.message, 'error');
     btn.disabled = false;
     btn.textContent = label;
   }
+}
+
+/* ---------- Comprobantes (fotos) ---------- */
+// Reduce la foto a ~1600 px en JPEG antes de enviarla (una foto de iPhone pasa de ~3 MB a ~250 KB).
+function compressImage(file) {
+  return new Promise((resolve, reject) => {
+    const url = URL.createObjectURL(file);
+    const img = new Image();
+    img.onload = () => {
+      const max = 1600, k = Math.min(1, max / Math.max(img.width, img.height));
+      const c = document.createElement('canvas');
+      c.width = Math.round(img.width * k); c.height = Math.round(img.height * k);
+      c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
+      URL.revokeObjectURL(url);
+      const dataUrl = c.toDataURL('image/jpeg', 0.72);
+      resolve({ url: dataUrl, b64: dataUrl.split(',')[1], mime: 'image/jpeg' });
+    };
+    img.onerror = () => { URL.revokeObjectURL(url); reject(new Error('No se pudo leer la imagen.')); };
+    img.src = url;
+  });
+}
+async function subirFoto(id, foto) {
+  toast('Subiendo comprobante...', 'info');
+  try {
+    await write('uploadAdjunto', [id, foto.b64, foto.mime], { ok: 'Comprobante guardado en tu Drive.' });
+    S.adjCache = S.adjCache || {};
+    S.adjCache[id] = foto.url;
+  } catch (e) {}
+}
+function openAdjunto(id) {
+  S.adjCache = S.adjCache || {};
+  const sh = openSheet({
+    kind: 'adjunto', tall: true, title: 'Comprobante',
+    render: () => S.adjCache[id] ? '<img class="adj-img" src="' + S.adjCache[id] + '" alt="Comprobante">' : '<div class="empty"><div class="spinner"></div><p>Descargando de tu Drive...</p></div>'
+  });
+  if (!S.adjCache[id]) {
+    api('getAdjunto', id).then(r => { S.adjCache[id] = 'data:' + r.mime + ';base64,' + r.b64; if (sheets.includes(sh)) sh.render(); })
+      .catch(e => { if (!e.auth) toast(e.message, 'error'); closeSheet(sh); });
+  }
+}
+
+/* ---------- Presupuestos: aviso al cruzar el 80% o el 100% ---------- */
+function presupSnapshot() {
+  const ms = monthStats(firstOfMonth(pd(today())), corrPEN);
+  const out = {};
+  Object.keys(S.presup).forEach(c => { out[c] = (ms.total.egr[c] || 0) / S.presup[c]; });
+  return out;
+}
+function avisarPresupuesto(antes) {
+  const ahora = presupSnapshot();
+  Object.keys(ahora).forEach(c => {
+    const a = antes[c] || 0, b = ahora[c];
+    if (a < 1 && b >= 1) setTimeout(() => toast(catIcon(c) + ' Superaste el presupuesto de ' + c + ' (' + Math.round(b * 100) + '%).', 'error'), 700);
+    else if (a < 0.8 && b >= 0.8) setTimeout(() => toast(catIcon(c) + ' Llevas el ' + Math.round(b * 100) + '% del presupuesto de ' + c + '.', 'warn'), 700);
+  });
 }
 
 /* ---------- Vencidos ---------- */
@@ -1138,7 +1338,7 @@ function openCats() {
       S.movs.forEach(m => { uso[m.categoria] = (uso[m.categoria] || 0) + 1; });
       return '<div class="list">' + S.cats.map((c, i) => {
         const prot = CAT_PROTEGIDAS.includes(c);
-        return '<div class="li"><div class="li-main"><b>' + esc(c) + '</b><small>' + (uso[c] || 0) + ' movimiento(s)</small></div>' +
+        return '<div class="li"><button class="cat-ico" data-act="catIcono" data-i="' + i + '" aria-label="Cambiar ícono">' + catIcon(c) + '</button><div class="li-main"><b>' + esc(c) + '</b><small>' + (uso[c] || 0) + ' movimiento(s)</small></div>' +
           (prot ? '<span class="tag">del sistema</span>' : '<button class="mini" data-act="catRename" data-i="' + i + '">✎</button><button class="mini del" data-act="catDel" data-i="' + i + '">' + IC.x + '</button>') + '</div>';
       }).join('') + '</div><p class="muted small">Renombrar actualiza también los movimientos y gastos fijos. No se puede eliminar una categoría en uso.</p>';
     }
@@ -1156,7 +1356,7 @@ function openCuentas() {
         const l = S.cuentas.filter(c => c.tipo === t);
         return '<h4 class="sec">' + title + '</h4><p class="muted small">' + help + '</p>' + (l.length ? '<div class="list">' + l.map(c =>
           '<button class="li" data-act="editCuenta" data-id="' + c.id + '"><span class="swatch" style="--c:' + c.color + '"></span><div class="li-main"><b>' + esc(c.nombre) + '</b><small>' + (c.activa ? 'Activa' : 'Archivada') + '</small></div>' +
-          '<b class="' + (ctaBalance(c.id, true) < 0 ? 'neg' : '') + '">' + money(ctaBalance(c.id, true)) + '</b></button>').join('') + '</div>' : '<p class="muted small center">Ninguna.</p>');
+          '<b class="' + (ctaBalance(c.id, true) < 0 ? 'neg' : '') + '">' + money(ctaBalance(c.id, true), c.moneda) + '</b></button>').join('') + '</div>' : '<p class="muted small center">Ninguna.</p>');
       };
       return grp('Corriente', 'Corrientes', 'Forman el flujo del calendario y el saldo disponible.') + grp('Ahorro', 'Ahorro', 'Van aparte del flujo y pueden tener metas.');
     }
@@ -1174,6 +1374,8 @@ function openCuentaForm(p) {
         '<label class="fld"><span>Nombre</span><input name="nombre" value="' + esc(f.nombre) + '" placeholder="Ej. BCP Sueldo, Interbank, Ahorro BBVA" required autocomplete="off"></label>' +
         '<div class="fld"><span>Tipo</span><div class="seg">' + ['Corriente', 'Ahorro'].map(t => '<button type="button" class="' + (f.tipo === t ? 'on' : '') + '" data-act="ctaTipo" data-v="' + t + '">' + t + '</button>').join('') + '</div>' +
         '<small class="muted">' + (f.tipo === 'Ahorro' ? 'No suma al disponible del día a día. Puedes crear metas y repartir su dinero entre ellas.' : 'Suma a tu flujo disponible y aparece en el calendario.') + '</small></div>' +
+        '<div class="fld"><span>Moneda</span><div class="seg">' + [['PEN', 'Soles (S/)'], ['USD', 'Dólares (US$)']].map(x => '<button type="button" class="' + ((f.moneda || 'PEN') === x[0] ? 'on' : '') + '" data-act="ctaMoneda" data-v="' + x[0] + '">' + x[1] + '</button>').join('') + '</div>' +
+        (c && (f.moneda || 'PEN') !== (c.moneda || 'PEN') ? '<small class="neg">Ojo: los montos ya registrados no se convierten, solo cambia la moneda en que se leen.</small>' : '') + '</div>' +
         '<div class="fld"><span>Color</span><div class="swatches">' + COLORES.map(col => '<button type="button" class="sw' + (f.color === col ? ' on' : '') + '" style="--c:' + col + '" data-act="ctaColor" data-v="' + col + '" aria-label="' + col + '"></button>').join('') + '</div></div>';
       if (!c) h += '<div class="row2"><label class="fld"><span>Saldo actual (opcional)</span><input name="saldoInicial" inputmode="decimal" placeholder="0.00" value="' + esc(f.saldoInicial) + '"></label>' +
         '<label class="fld"><span>Al día</span><input type="date" name="fechaSaldo" value="' + esc(f.fechaSaldo) + '"></label></div><p class="muted small">Se registra como "SALDO INICIAL" (real) en esa fecha.</p>';
@@ -1203,7 +1405,7 @@ function openCuentaHist(id) {
       let run = 0;
       const withBal = list.map(m => { run += m.monto; return { m, bal: run }; }).reverse();
       const real = ctaBalance(id, true), proy = ctaBalance(id, false);
-      let h = '<div class="stat2"><div><span>Saldo real</span><b class="' + (real < 0 ? 'neg' : '') + '">' + money(real) + '</b></div><div><span>Con proyectados</span><b>' + money(proy) + '</b></div></div>';
+      let h = '<div class="stat2"><div><span>Saldo real</span><b class="' + (real < 0 ? 'neg' : '') + '">' + money(real, c.moneda) + '</b></div><div><span>Con proyectados</span><b>' + money(proy, c.moneda) + '</b></div></div>';
       if (c.tipo === 'Ahorro') h += '<div class="btn-row"><button class="btn sm" data-act="deposit" data-id="' + id + '">Depositar</button><button class="btn sm" data-act="withdraw" data-id="' + id + '">Retirar</button></div>';
       h += withBal.length ? '<div class="list">' + withBal.slice(0, 300).map(x => movRow(x.m, { date: true, bal: x.bal })).join('') + '</div>' : '<div class="empty small"><p>Sin movimientos.</p></div>';
       return h;
@@ -1243,7 +1445,8 @@ function openMeta(id) {
     render: () => {
       const meta = S.idx.meta.get(id);
       if (!meta) return '<p class="muted">La meta ya no existe.</p>';
-      const st = metaStats(meta);
+      const st = metaStats(meta), cur = curOf(meta.cuentaId);
+      const money = n => window.money(n, cur);
       const aportes = S.movs.filter(m => m.metaId === id).sort((a, b) => a.fecha < b.fecha ? 1 : -1);
       let h = '<div class="meta-hero"><div class="ring" style="--p:' + (st.pct * 360).toFixed(1) + 'deg;--c:' + ctaColor(meta.cuentaId) + '"><span>' + Math.round(st.pct * 100) + '%</span></div>' +
         '<div><div class="hero-amt sm">' + money(st.real) + '</div><div class="muted">de ' + money(st.obj) + ' · en ' + esc(ctaName(meta.cuentaId)) + '</div></div></div>';
@@ -1280,8 +1483,8 @@ function openFijos() {
         ? 'Ya cargados en <b>' + esc(monthLabel(S.month)) + '</b> (' + esc(String(ap.en).slice(0, 16)) + (ap.por ? ' por ' + esc(ap.por) : '') + ').'
         : 'Aún no se cargan en <b>' + esc(monthLabel(S.month)) + '</b>.') + '</div>';
       if (S.fijos == null) return h + '<div class="empty small"><div class="spinner"></div></div>';
-      h += S.fijos.length ? '<div class="list">' + S.fijos.map(f => '<button class="li" data-act="editFijo" data-id="' + f.id + '"><span class="daybox">' + f.dia + '</span><div class="li-main"><b>' + esc(f.categoria) + '</b><small>' +
-        '<span class="dot" style="--c:' + ctaColor(f.cuentaId) + '"></span>' + esc(ctaName(f.cuentaId)) + (f.detalle ? ' · ' + esc(f.detalle) : '') + '</small></div><b class="' + (f.tipo === 'Ingreso' ? 'pos' : 'neg') + '">' + (f.tipo === 'Ingreso' ? '+' : '-') + money(f.monto) + '</b></button>').join('') + '</div>'
+      h += S.fijos.length ? '<div class="list">' + S.fijos.map(f => '<button class="li" data-act="editFijo" data-id="' + f.id + '"><span class="daybox">' + f.dia + '</span><div class="li-main"><b>' + catIcon(f.categoria) + ' ' + esc(f.categoria) + '</b><small>' +
+        '<span class="dot" style="--c:' + ctaColor(f.cuentaId) + '"></span>' + esc(ctaName(f.cuentaId)) + (f.detalle ? ' · ' + esc(f.detalle) : '') + '</small></div><b class="' + (f.tipo === 'Ingreso' ? 'pos' : 'neg') + '">' + (f.tipo === 'Ingreso' ? '+' : '-') + money(f.monto, curOf(f.cuentaId)) + '</b></button>').join('') + '</div>'
         : '<div class="empty small"><p>La plantilla está vacía. Agrega tus pagos de cada mes (alquiler, servicios, sueldo...).</p></div>';
       if (S.fijos.length) {
         const neto = sum(S.fijos, f => f.tipo === 'Ingreso' ? f.monto : -f.monto);
@@ -1321,26 +1524,28 @@ function openCuadre() {
   openSheet({
     kind: 'cuadre', closeLabel: 'Cancelar', title: 'Cuadre con el banco',
     render: () => {
-      const r = cuadre();
-      if (!r.det.length) return '<p class="muted">Crea primero una cuenta corriente.</p>';
+      const grupos = ['PEN', 'USD'].map(c => cuadre(c)).filter(r => r.det.length);
+      if (!grupos.length) return '<p class="muted">Crea primero una cuenta corriente.</p>';
       return '<form data-form="cuadre"><p class="muted small">Anota el saldo que ves hoy en la app de cada banco. Se compara con el saldo <b>real</b> registrado aquí hasta el sábado de esta semana.</p>' +
-        r.det.map(x => '<div class="cuadre-row"><div class="li-main"><b><span class="dot" style="--c:' + x.c.color + '"></span>' + esc(x.c.nombre) + '</b><small>Según la app: ' + money(x.app) + (x.saldo ? ' · último registro ' + esc(shortDate(x.saldo.fecha)) : '') + '</small></div>' +
-          '<input class="inp num" name="s_' + x.c.id + '" inputmode="decimal" value="' + (x.saldo ? x.saldo.saldo.toFixed(2) : '') + '" placeholder="0.00" data-input="cuadreCalc"></div>').join('') +
-        '<div class="kv big"><span>Diferencia</span><b id="cuadreDif">—</b></div>' +
+        grupos.map(r => (grupos.length > 1 ? '<h4 class="sec">' + (r.cur === 'USD' ? 'Dólares' : 'Soles') + '</h4>' : '') +
+          r.det.map(x => '<div class="cuadre-row"><div class="li-main"><b><span class="dot" style="--c:' + x.c.color + '"></span>' + esc(x.c.nombre) + '</b><small>Según la app: ' + money(x.app, r.cur) + (x.saldo ? ' · último registro ' + esc(shortDate(x.saldo.fecha)) : '') + '</small></div>' +
+            '<input class="inp num" name="s_' + x.c.id + '" inputmode="decimal" value="' + (x.saldo ? x.saldo.saldo.toFixed(2) : '') + '" placeholder="0.00" data-input="cuadreCalc"></div>').join('') +
+          '<div class="kv big"><span>Diferencia' + (grupos.length > 1 ? ' (' + sym(r.cur) + ')' : '') + '</span><b class="cuadre-dif" data-cur="' + r.cur + '">—</b></div>').join('') +
         '<button class="btn primary big" type="submit">Guardar saldos</button></form>';
     },
     mount: sh => calcCuadre(sh)
   });
 }
 function calcCuadre(sh) {
-  const r = cuadre();
-  let banco = 0, alguno = false;
-  r.det.forEach(x => { const i = $('[name="s_' + x.c.id + '"]', sh.body); if (i && i.value.trim() !== '') alguno = true; banco += parseAmount(i && i.value); });
-  const dif = banco - r.app, el = $('#cuadreDif', sh.body);
-  if (!el) return;
-  if (!alguno) { el.textContent = '—'; el.className = 'muted'; return; }
-  el.textContent = Math.abs(dif) < 0.01 ? 'Cuadrado ✓' : moneyPlus(dif);
-  el.className = Math.abs(dif) < 0.01 ? 'pos' : dif > 0 ? 'blue' : 'neg';
+  $$('.cuadre-dif', sh.body).forEach(el => {
+    const r = cuadre(el.dataset.cur);
+    let banco = 0, alguno = false;
+    r.det.forEach(x => { const i = $('[name="s_' + x.c.id + '"]', sh.body); if (i && i.value.trim() !== '') alguno = true; banco += parseAmount(i && i.value); });
+    const dif = banco - r.app;
+    if (!alguno) { el.textContent = '—'; el.className = 'cuadre-dif muted'; return; }
+    el.textContent = Math.abs(dif) < 0.01 ? 'Cuadrado ✓' : moneyPlus(dif, r.cur);
+    el.className = 'cuadre-dif ' + (Math.abs(dif) < 0.01 ? 'pos' : dif > 0 ? 'blue' : 'neg');
+  });
 }
 
 /* ---------- Contraseña / instalar ---------- */
@@ -1481,12 +1686,18 @@ async function toggleWeek(sat, lock) {
 
 /* ============================ EVENTOS (delegacion) ============================ */
 const ACT = {
-  tab: el => goTab(el.dataset.tab),
+  tab: el => {
+    // Doble toque en "Inicio" = sincronizar ahora.
+    const now = Date.now();
+    if (el.dataset.tab === 'inicio' && S.tab === 'inicio' && now - (ACT._lastInicio || 0) < 400) { ACT._lastInicio = 0; haptic(); loadData(true); return; }
+    if (el.dataset.tab === 'inicio') ACT._lastInicio = now;
+    goTab(el.dataset.tab);
+  },
   goCal: () => { S.month = firstOfMonth(pd(today())); goTab('calendario'); },
   goCalSum: () => { S.month = firstOfMonth(pd(today())); S.calView = 'month'; goTab('calendario'); openResumen(); },
   openResumen: () => openResumen(),
-  showDeficit: () => dialog('<h4>ð¨ Ruptura de caja</h4><p>El saldo proyectado de tus cuentas corrientes no alcanza en:</p><div class="dlg-list">' +
-    S.deficits.map(d => '<button data-v="' + d.fecha + '"><b>' + esc(dayLabel(d.fecha, { weekday: 'short', day: 'numeric', month: 'short' })) + '</b> Â· <span class="neg">' + money(d.saldo) + '</span></button>').join('') +
+  showDeficit: () => dialog('<h4>🚨 Ruptura de caja</h4><p>El saldo proyectado de tus cuentas corrientes no alcanza en:</p><div class="dlg-list">' +
+    S.deficits.map(d => '<button data-v="' + d.fecha + '"><b>' + esc(dayLabel(d.fecha, { weekday: 'short', day: 'numeric', month: 'short' })) + '</b> · <span class="neg">' + money(d.saldo) + '</span></button>').join('') +
     '</div><div class="dlg-btns"><button data-v="">Cerrar</button></div>').then(d => { if (d) openDay(d); }),
   calView: el => setCalView(el.dataset.v),
   closeSheet: () => closeSheet(),
@@ -1547,6 +1758,7 @@ const ACT = {
   newCuenta: el => openCuentaForm({ tipo: el.dataset.tipo }),
   editCuenta: el => openCuentaForm({ id: el.dataset.id }),
   ctaTipo: el => { const sh = topSheet(); readCuentaForm(sh); sh.state.F.tipo = el.dataset.v; sh.render(); },
+  ctaMoneda: el => { const sh = topSheet(); readCuentaForm(sh); sh.state.F.moneda = el.dataset.v; sh.render(); },
   ctaColor: el => { const sh = topSheet(); readCuentaForm(sh); sh.state.F.color = el.dataset.v; sh.render(); },
   ctaArchive: async el => {
     const c = cta(el.dataset.id); if (!c) return;
@@ -1634,8 +1846,8 @@ const FORMS = {
     const f = readCuentaForm(sh), c = sh.state.edit;
     if (!f.nombre.trim()) return toast('Ponle un nombre.', 'error');
     try {
-      if (c) await write('updateCuenta', [c.id, { nombre: f.nombre, tipo: f.tipo, color: f.color }], { ok: 'Cuenta actualizada.' });
-      else await write('addCuenta', [{ nombre: f.nombre, tipo: f.tipo, color: f.color, saldoInicial: f.saldoInicial, fechaSaldo: f.fechaSaldo }], { ok: 'Cuenta creada.' });
+      if (c) await write('updateCuenta', [c.id, { nombre: f.nombre, tipo: f.tipo, color: f.color, moneda: f.moneda || 'PEN' }], { ok: 'Cuenta actualizada.' });
+      else await write('addCuenta', [{ nombre: f.nombre, tipo: f.tipo, color: f.color, moneda: f.moneda || 'PEN', saldoInicial: f.saldoInicial, fechaSaldo: f.fechaSaldo }], { ok: 'Cuenta creada.' });
       closeSheet(sh);
     } catch (e) {}
   },
@@ -1660,7 +1872,7 @@ const FORMS = {
     } catch (e) { if (!e.auth) toast(e.message, 'error'); }
   },
   cuadre: async (form, sh) => {
-    const items = cuadre().det.map(x => ({ cuentaId: x.c.id, saldo: form['s_' + x.c.id].value })).filter(x => String(x.saldo).trim() !== '');
+    const items = cuadre('PEN').det.concat(cuadre('USD').det).map(x => ({ cuentaId: x.c.id, saldo: form['s_' + x.c.id].value })).filter(x => String(x.saldo).trim() !== '');
     try { await write('updateSaldos', [items], { ok: 'Saldos guardados.' }); closeSheet(sh); } catch (e) {}
   },
   pwd: async (form, sh) => {
@@ -1792,7 +2004,7 @@ function setCalView(v, weekStart) {
   const TABS = ['inicio', 'calendario', 'ahorro', 'mas'];
   let sw = null, pinch = null;
   const dist = (a, b) => Math.hypot(a.clientX - b.clientX, a.clientY - b.clientY);
-  const blocked = el => el.closest('.chips-row, .acc-scroll, input, select, textarea, [draggable="true"]');
+  const blocked = el => el.closest('.chips-row, .acc-scroll, .alert-row, input, select, textarea, [draggable="true"], [data-swipe]');
   const view = () => $('#view');
   const resetView = anim => {
     const v = view(); if (!v) return;
@@ -1880,6 +2092,368 @@ function setCalView(v, weekStart) {
   ['gesturestart', 'gesturechange'].forEach(ev => document.addEventListener(ev, e => e.preventDefault()));
 })();
 
+/* ============================ PRESUPUESTOS ============================ */
+function openPresup() {
+  openSheet({
+    kind: 'presup', live: true, tall: true, title: 'Presupuestos',
+    render: () => {
+      const ms = monthStats(firstOfMonth(pd(today())), corrPEN);
+      const cats = S.cats.filter(c => !CATS_INGRESO.includes(c) && c !== CAT_TRANSF);
+      let h = '<p class="muted small">Tope mensual por categoría, en soles, sobre tus cuentas corrientes. Se compara con lo gastado en el mes (real + proyectado) y la app te avisa al llegar al 80% y al pasarte. Deja en blanco para no poner tope.</p>';
+      const rows = presupRows(ms);
+      if (rows.length) h += '<h4 class="sec">Este mes</h4><div class="card flat">' + rows.map(presupBar).join('') + '</div>';
+      h += '<h4 class="sec">Topes</h4><div class="list">' + cats.map(c => '<div class="li"><span class="cat-ico static">' + catIcon(c) + '</span><div class="li-main"><b>' + esc(c) + '</b><small>Este mes: ' + money(ms.total.egr[c] || 0, 'PEN') + '</small></div>' +
+        '<input class="inp num" inputmode="decimal" placeholder="Sin tope" value="' + (S.presup[c] ? S.presup[c].toFixed(2) : '') + '" data-change="presupSet" data-cat="' + esc(c) + '"></div>').join('') + '</div>';
+      return h;
+    }
+  });
+}
+
+/* ============================ APARIENCIA ============================ */
+const ACENTOS = [['Azul', '#007aff', '#0a84ff'], ['Índigo', '#5856d6', '#5e5ce6'], ['Morado', '#a24bd6', '#bf5af2'], ['Rosado', '#e8305a', '#ff375f'],
+  ['Naranja', '#e8710a', '#ff9f0a'], ['Menta', '#00968f', '#30d5c8'], ['Grafito', '#3a3a3c', '#d1d1d6']];
+function apariencia() { return Object.assign({ accent: 0, theme: 'auto' }, store.get('apariencia', {})); }
+const darkMQ = window.matchMedia('(prefers-color-scheme: dark)');
+function applyAppearance() {
+  const a = apariencia(), root = document.documentElement;
+  if (a.theme === 'auto') delete root.dataset.theme; else root.dataset.theme = a.theme;
+  const dark = a.theme === 'dark' || (a.theme === 'auto' && darkMQ.matches);
+  const ac = ACENTOS[a.accent] || ACENTOS[0];
+  root.style.setProperty('--blue', dark ? ac[2] : ac[1]);
+  $$('meta[name="theme-color"]').forEach(m => m.setAttribute('content', dark ? '#000000' : '#f2f2f7'));
+}
+try { darkMQ.addEventListener('change', applyAppearance); } catch (e) {}
+function openApariencia() {
+  openSheet({
+    kind: 'apariencia', live: true, title: 'Apariencia',
+    render: () => {
+      const a = apariencia();
+      return '<h4 class="sec">Color de acento</h4><p class="muted small">Botones, enlaces, pestaña activa y el "+". Se guarda en este teléfono: cada uno puede tener el suyo. Verde (ingreso), rojo (gasto) y naranja (vencido) no cambian.</p>' +
+        '<div class="accents">' + ACENTOS.map((x, i) => '<button class="acc-sw' + (a.accent === i ? ' on' : '') + '" data-act="setAccent" data-v="' + i + '" style="--c:' + x[1] + '"><i></i><span>' + x[0] + '</span></button>').join('') + '</div>' +
+        '<h4 class="sec">Tema</h4><div class="seg">' + [['auto', 'Automático'], ['light', 'Claro'], ['dark', 'Oscuro']].map(x => '<button class="' + (a.theme === x[0] ? 'on' : '') + '" data-act="setTheme" data-v="' + x[0] + '">' + x[1] + '</button>').join('') + '</div>' +
+        '<p class="muted small">Automático sigue el modo claro/oscuro del teléfono.</p>' +
+        '<div class="preview card flat"><button class="btn primary">Botón</button> <span class="link">Enlace</span> <span class="pill">Hoy</span></div>';
+    }
+  });
+}
+
+/* ============================ BLOQUEO: FACE ID + PIN ============================ */
+const LOCK_AFTER_MS = 5 * 60 * 1000;
+const b64u = {
+  enc: buf => btoa(String.fromCharCode.apply(null, Array.from(new Uint8Array(buf)))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, ''),
+  dec: s => { s = s.replace(/-/g, '+').replace(/_/g, '/'); while (s.length % 4) s += '='; return Uint8Array.from(atob(s), c => c.charCodeAt(0)); }
+};
+const rand = n => crypto.getRandomValues(new Uint8Array(n));
+async function hashPin(pin, salt) {
+  const d = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(salt + ':' + pin + ':finanzas'));
+  return b64u.enc(d);
+}
+const lockCfg = () => store.get('lock', null);
+const lockOn = () => { const l = lockCfg(); return !!(l && l.pinHash); };
+async function faceAvailable() {
+  try { return !!(window.PublicKeyCredential && await PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable()); } catch (e) { return false; }
+}
+// Face ID / huella via WebAuthn (llave del propio telefono). Es un cerrojo local sobre la sesion ya iniciada.
+async function faceRegister() {
+  const u = S.user || { usuario: 'usuario', nombre: 'Usuario' };
+  const cred = await navigator.credentials.create({ publicKey: {
+    challenge: rand(32), rp: { name: CFG.APP_NAME || 'Finanzas', id: location.hostname },
+    user: { id: rand(16), name: u.usuario, displayName: u.nombre || u.usuario },
+    pubKeyCredParams: [{ type: 'public-key', alg: -7 }, { type: 'public-key', alg: -257 }],
+    authenticatorSelection: { authenticatorAttachment: 'platform', userVerification: 'required', residentKey: 'discouraged' },
+    timeout: 60000, attestation: 'none'
+  } });
+  return b64u.enc(cred.rawId);
+}
+async function faceVerify(credId) {
+  await navigator.credentials.get({ publicKey: {
+    challenge: rand(32), rpId: location.hostname, userVerification: 'required', timeout: 60000,
+    allowCredentials: [{ type: 'public-key', id: b64u.dec(credId), transports: ['internal'] }]
+  } });
+  return true;
+}
+function markActive() { if (S.token) store.set('lastActive', Date.now()); }
+
+// Teclado de PIN a pantalla completa. onPin(pin) -> true (ok) | string (error) | Promise de eso.
+function pinPad(o) {
+  const wrap = document.createElement('div');
+  wrap.className = 'lock-wrap' + (o.lock ? ' is-lock' : '');
+  const keys = ['1', '2', '3', '4', '5', '6', '7', '8', '9', o.face ? 'face' : '', '0', 'del'];
+  wrap.innerHTML = '<div class="lock-box"><img class="lock-logo" src="icons/icon-192.png" alt=""><h3 class="lock-title"></h3><p class="lock-sub"></p>' +
+    '<div class="pin-dots"><i></i><i></i><i></i><i></i></div><div class="pin-err"></div><div class="pin-pad">' +
+    keys.map(k => k === '' ? '<span></span>' : '<button class="pin-k' + (k === 'face' || k === 'del' ? ' fn' : '') + '" data-k="' + k + '">' + (k === 'face' ? IC.faceid : k === 'del' ? IC.del : k) + '</button>').join('') + '</div>' +
+    (o.foot ? '<div class="lock-foot">' + o.foot + '</div>' : '') + '</div>';
+  document.body.appendChild(wrap);
+  $('.lock-title', wrap).textContent = o.title; $('.lock-sub', wrap).textContent = o.sub || '';
+  requestAnimationFrame(() => wrap.classList.add('open'));
+  let pin = '', busy = false;
+  const dots = () => $$('.pin-dots i', wrap).forEach((d, i) => d.classList.toggle('on', i < pin.length));
+  const close = () => { wrap.classList.remove('open'); setTimeout(() => wrap.remove(), 250); };
+  const err = msg => { $('.pin-err', wrap).textContent = msg; wrap.classList.add('shake'); haptic(); setTimeout(() => wrap.classList.remove('shake'), 400); pin = ''; dots(); };
+  wrap.addEventListener('click', async e => {
+    const b = e.target.closest('[data-k]'); const f = e.target.closest('[data-lk]');
+    if (f && o.onFoot) { o.onFoot(f.dataset.lk, close); return; }
+    if (!b || busy) return;
+    const k = b.dataset.k;
+    if (k === 'del') { pin = pin.slice(0, -1); dots(); return; }
+    if (k === 'face') { if (o.onFace) o.onFace(close); return; }
+    if (pin.length >= 4) return;
+    pin += k; dots(); $('.pin-err', wrap).textContent = '';
+    if (pin.length === 4) {
+      busy = true;
+      const r = await o.onPin(pin);
+      busy = false;
+      if (r === true) close(); else if (r && r.info) { pin = ""; dots(); $(".pin-err", wrap).textContent = r.info; } else err(typeof r === "string" ? r : "PIN incorrecto");
+    }
+  });
+  return { wrap, close, setSub: t => { $('.lock-sub', wrap).textContent = t; } };
+}
+function askNewPin() {
+  return new Promise(resolve => {
+    let first = null;
+    const p = pinPad({ title: 'Crea un PIN', sub: '4 dígitos para desbloquear la app', foot: '<button class="link" data-lk="cancel">Cancelar</button>',
+      onFoot: (k, close) => { close(); resolve(null); },
+      onPin: pin => {
+        if (!first) { first = pin; $('.lock-title', p.wrap).textContent = 'Repite el PIN'; return { info: "Escríbelo otra vez para confirmar" }; }
+        if (pin !== first) { first = null; $('.lock-title', p.wrap).textContent = 'Crea un PIN'; return 'No coinciden. Empecemos de nuevo.'; }
+        resolve(pin); return true;
+      } });
+    $('.pin-err', p.wrap).classList.add('hint');
+  });
+}
+function askCurrentPin(title) {
+  const l = lockCfg();
+  return new Promise(resolve => {
+    pinPad({ title: title || 'Ingresa tu PIN', foot: '<button class="link" data-lk="cancel">Cancelar</button>',
+      onFoot: (k, close) => { close(); resolve(false); },
+      onPin: async pin => { if ((await hashPin(pin, l.salt)) === l.pinHash) { resolve(true); return true; } return 'PIN incorrecto'; } });
+  });
+}
+let lockShown = false;
+function showLock() {
+  if (!lockOn() || lockShown || !S.token) return;
+  lockShown = true;
+  document.body.classList.add('locked');
+  const l = lockCfg();
+  const unlock = close => { store.set('lock', Object.assign(lockCfg() || {}, { fails: 0 })); lockShown = false; document.body.classList.remove('locked'); markActive(); close(); backgroundSync(); };
+  const tryFace = close => faceVerify(l.credId).then(() => unlock(close)).catch(() => {});
+  const p = pinPad({
+    lock: true, face: !!l.credId, title: 'Finanzas bloqueada', sub: l.credId ? 'Usa Face ID o tu PIN' : 'Ingresa tu PIN',
+    foot: '<button class="link" data-lk="forgot">¿Olvidaste tu PIN? Cerrar sesión</button>',
+    onFace: close => tryFace(close),
+    onFoot: async (k, close) => {
+      if (!(await ask('Cerrar sesión', 'Tendrás que entrar con tu usuario y contraseña. El bloqueo se desactiva.', 'Cerrar sesión', true))) return;
+      forceLogoutLocal(close, 'Ingresa con tu usuario y contraseña.');
+    },
+    onPin: async pin => {
+      const cfg = lockCfg();
+      if ((await hashPin(pin, cfg.salt)) === cfg.pinHash) { unlock(() => p.close()); return true; }
+      const fails = (cfg.fails || 0) + 1;
+      store.set('lock', Object.assign(cfg, { fails }));
+      if (fails >= 5) { forceLogoutLocal(() => p.close(), 'Demasiados intentos de PIN. Por seguridad, ingresa con tu usuario y contraseña.'); return true; }
+      return 'PIN incorrecto · quedan ' + (5 - fails) + ' intento(s)';
+    }
+  });
+  if (l.credId) setTimeout(() => tryFace(() => p.close()), 450); // en algunos telefonos se abre solo; si no, toca el icono
+}
+function forceLogoutLocal(close, msg) {
+  quiet(api('logout'));
+  store.del('lock'); store.del('cache');
+  lockShown = false; document.body.classList.remove('locked');
+  if (close) close();
+  S.movs = []; S.cuentas = []; S.loaded = false;
+  onSessionExpired(msg);
+}
+function openSeguridad() {
+  openSheet({
+    kind: 'seguridad', live: true, title: 'Bloqueo',
+    render: sh => {
+      const l = lockCfg();
+      if (!l || !l.pinHash) return '<p>Protege la app con un <b>PIN de 4 dígitos</b> y, si tu teléfono lo permite, con <b>Face ID</b> o huella.</p>' +
+        '<p class="muted small">Se pide al abrir la app si estuvo más de 5 minutos cerrada o en segundo plano. Es por teléfono: tu esposa activa el suyo en su propio teléfono.</p>' +
+        '<button class="btn primary big" data-act="lockSetup">Activar bloqueo</button>';
+      return '<div class="banner ok">🔒 Bloqueo activo' + (l.credId ? ' con Face ID y PIN' : ' con PIN') + '. Se pide tras 5 minutos fuera de la app.</div>' +
+        '<div class="menu flat">' +
+          (l.credId ? '<button class="menu-item" data-act="faceOff"><span class="mi-ico">🙂</span><span class="mi-body"><span>Desactivar Face ID</span><small>Seguirá pidiendo el PIN</small></span></button>'
+            : (sh.state.face ? '<button class="menu-item" data-act="faceOn"><span class="mi-ico">🙂</span><span class="mi-body"><span>Activar Face ID / huella</span><small>Más rápido que el PIN</small></span></button>' : '<div class="menu-item"><span class="mi-ico">🙂</span><span class="mi-body"><span>Face ID no disponible</span><small>Este teléfono o navegador no lo permite; se usa el PIN.</small></span></div>')) +
+          '<button class="menu-item" data-act="pinChange"><span class="mi-ico">🔢</span><span class="mi-body"><span>Cambiar PIN</span></span></button>' +
+          '<button class="menu-item" data-act="lockNow"><span class="mi-ico">🔐</span><span class="mi-body"><span>Bloquear ahora</span></span></button>' +
+          '<button class="menu-item" data-act="lockOff"><span class="mi-ico">🔓</span><span class="mi-body"><span class="neg">Desactivar bloqueo</span></span></button>' +
+        '</div>';
+    },
+    mount: sh => { if (sh.state.face == null) faceAvailable().then(v => { sh.state.face = v; if (sheets.includes(sh)) sh.render(); }); }
+  });
+}
+async function lockSetup() {
+  const pin = await askNewPin();
+  if (!pin) return;
+  const salt = b64u.enc(rand(16));
+  store.set('lock', { pinHash: await hashPin(pin, salt), salt, credId: null, fails: 0 });
+  markActive();
+  toast('Bloqueo activado.', 'ok');
+  if (await faceAvailable() && await ask('¿Usar Face ID?', 'Así desbloqueas con la cara (o huella) y el PIN queda de respaldo.', 'Activar Face ID')) await faceOn();
+  refreshSheets(); renderView();
+}
+async function faceOn() {
+  try {
+    const id = await faceRegister();
+    await faceVerify(id); // confirma que funciona antes de guardarlo
+    store.set('lock', Object.assign(lockCfg(), { credId: id }));
+    toast('Face ID activado.', 'ok');
+  } catch (e) { toast('No se pudo activar Face ID' + (e && e.name === 'NotAllowedError' ? ' (cancelado).' : '.'), 'error'); }
+  refreshSheets(); renderView();
+}
+
+/* ============================ CONFETI (meta cumplida) ============================ */
+function confetti() {
+  if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+  const c = document.createElement('canvas');
+  c.className = 'confetti';
+  const W = c.width = innerWidth * devicePixelRatio, H = c.height = innerHeight * devicePixelRatio;
+  document.body.appendChild(c);
+  const ctx = c.getContext('2d'), colors = ['#30d158', '#0a84ff', '#ff9f0a', '#ff375f', '#bf5af2', '#ffd60a', '#64d2ff'];
+  const P = Array.from({ length: 160 }, () => ({ x: W / 2 + (Math.random() - .5) * W * .3, y: H * .35, vx: (Math.random() - .5) * 26 * devicePixelRatio, vy: (-Math.random() * 22 - 8) * devicePixelRatio,
+    s: (6 + Math.random() * 8) * devicePixelRatio, r: Math.random() * 6, vr: (Math.random() - .5) * .4, c: colors[Math.floor(Math.random() * colors.length)] }));
+  const t0 = performance.now();
+  (function frame(t) {
+    const el = t - t0;
+    ctx.clearRect(0, 0, W, H);
+    P.forEach(p => { p.vy += .55 * devicePixelRatio; p.vx *= .99; p.x += p.vx; p.y += p.vy; p.r += p.vr;
+      ctx.save(); ctx.translate(p.x, p.y); ctx.rotate(p.r); ctx.globalAlpha = Math.max(0, 1 - el / 3200); ctx.fillStyle = p.c; ctx.fillRect(-p.s / 2, -p.s / 4, p.s, p.s / 2); ctx.restore(); });
+    if (el < 3200) requestAnimationFrame(frame); else c.remove();
+  })(t0);
+}
+function checkMetasDone() {
+  if (!S.loaded) return;
+  const done = S.metas.filter(m => m.estado !== 'Archivada' && metaStats(m).done).map(m => m.id);
+  const prev = store.get('metasDone', null);
+  store.set('metasDone', done);
+  if (prev === null) return; // primera vez en este telefono: no celebrar metas que ya estaban cumplidas
+  const nuevas = done.filter(id => !prev.includes(id));
+  if (!nuevas.length) return;
+  confetti(); haptic();
+  const mt = S.idx.meta.get(nuevas[0]);
+  if (mt) toast('🎉 ¡Cumplieron la meta "' + mt.nombre + '"!', 'ok');
+}
+
+/* ============================ NUMEROS ANIMADOS ============================ */
+S.counts = {};
+function animateCounts() {
+  $$('[data-count]').forEach(el => {
+    const key = el.dataset.ck, to = +el.dataset.count, cur = el.dataset.cur || undefined;
+    const from = S.counts[key] == null ? 0 : S.counts[key];
+    S.counts[key] = to;
+    if (S.privacy || Math.abs(to - from) < 0.005 || window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+    const t0 = performance.now(), dur = 700;
+    (function step(t) {
+      if (!el.isConnected) return;
+      const k = Math.min(1, (t - t0) / dur), e = 1 - Math.pow(1 - k, 3);
+      el.textContent = money(from + (to - from) * e, cur);
+      if (k < 1) requestAnimationFrame(step);
+    })(t0);
+  });
+}
+
+/* ============================ DESLIZAR UN MOVIMIENTO ============================ */
+// Derecha = ejecutar (proyectados), izquierda = eliminar (con Deshacer), como en Mail del iPhone.
+(function rowSwipe() {
+  let st = null;
+  document.addEventListener('touchstart', e => {
+    st = null;
+    if (e.touches.length !== 1 || S.selMode) return;
+    const w = e.target.closest('[data-swipe]');
+    if (!w || e.target.closest('button, input, select')) return;
+    st = { w, row: $('.mv', w), x0: e.touches[0].clientX, y0: e.touches[0].clientY, dx: 0, axis: null, exec: w.dataset.exec === '1' };
+  }, { passive: true });
+  document.addEventListener('touchmove', e => {
+    if (!st) return;
+    const dx = e.touches[0].clientX - st.x0, dy = e.touches[0].clientY - st.y0;
+    if (!st.axis) {
+      if (Math.abs(dx) < 10 && Math.abs(dy) < 10) return;
+      st.axis = Math.abs(dx) > Math.abs(dy) * 1.2 ? 'x' : 'y';
+      if (st.axis === 'y') { st = null; return; }
+    }
+    e.preventDefault();
+    st.dx = (dx > 0 && !st.exec) ? dx * 0.2 : dx;
+    st.row.style.transition = 'none';
+    st.row.style.transform = 'translateX(' + st.dx + 'px)';
+    const armed = Math.abs(st.dx) > st.w.offsetWidth * 0.32;
+    st.w.classList.toggle('sw-r', st.dx > 0); st.w.classList.toggle('sw-l', st.dx < 0);
+    if (armed !== st.w.classList.contains('armed')) { st.w.classList.toggle('armed', armed); if (armed) haptic(); }
+  }, { passive: false });
+  const end = () => {
+    if (!st) return;
+    const { w, row, dx, exec } = st; st = null;
+    if (Math.abs(dx) > 8) { suppressClick = true; setTimeout(() => { suppressClick = false; }, 350); }
+    const armed = Math.abs(dx) > w.offsetWidth * 0.32, id = w.dataset.swipe;
+    row.style.transition = 'transform .22s ease-out';
+    if (armed && dx < 0) { row.style.transform = 'translateX(-110%)'; setTimeout(() => eliminarRapido(id), 180); }
+    else { row.style.transform = ''; if (armed && dx > 0 && exec) ejecutar(id); }
+    setTimeout(() => w.classList.remove('sw-l', 'sw-r', 'armed'), 230);
+  };
+  document.addEventListener('touchend', end);
+  document.addEventListener('touchcancel', end);
+})();
+
+/* ============================ ACCIONES NUEVAS ============================ */
+function pickEmoji(title, list) {
+  return dialog('<h4>' + esc(title) + '</h4><div class="emoji-grid">' + list.map(e => '<button data-v="' + e + '">' + e + '</button>').join('') + '</div><div class="dlg-btns"><button data-v="">Cancelar</button></div>').then(v => v || null);
+}
+Object.assign(ACT, {
+  togglePrivacy: () => { S.privacy = !S.privacy; store.set('privacy', S.privacy); haptic(); renderView(); refreshSheets(); renderSelbar(); },
+  moneda: el => { S.moneda = el.dataset.v; store.set('moneda', S.moneda); S.filter = ''; renderView(); refreshSheets(); },
+  openPresup: () => openPresup(),
+  catIcono: async el => {
+    const c = S.cats[+el.dataset.i]; if (!c) return;
+    const v = await pickEmoji('Ícono de ' + c, ICONOS_CAT);
+    if (v) quiet(write('setCategoriaIcono', [c, v], { ok: 'Ícono actualizado.' }));
+  },
+  verAdjunto: el => openAdjunto(el.dataset.id),
+  quitarAdjunto: async el => {
+    if (!(await ask('Quitar comprobante', 'La foto se envía a la papelera de tu Drive.', 'Quitar', true))) return;
+    try {
+      await write('deleteAdjunto', [el.dataset.id], { ok: 'Comprobante quitado.' });
+      if (S.adjCache) delete S.adjCache[el.dataset.id];
+      const sh = findSheet('movform'); if (sh) { readMovForm(sh); sh.render(); }
+    } catch (e) {}
+  },
+  fotoQuitar: () => { const sh = findSheet('movform'); if (sh) { readMovForm(sh); sh.state.foto = null; sh.render(); } },
+  openApariencia: () => openApariencia(),
+  setAccent: el => { store.set('apariencia', Object.assign(apariencia(), { accent: +el.dataset.v })); applyAppearance(); refreshSheets(); },
+  setTheme: el => { store.set('apariencia', Object.assign(apariencia(), { theme: el.dataset.v })); applyAppearance(); refreshSheets(); },
+  openSeguridad: () => openSeguridad(),
+  lockSetup: () => lockSetup(),
+  faceOn: () => faceOn(),
+  faceOff: () => { store.set('lock', Object.assign(lockCfg(), { credId: null })); toast('Face ID desactivado.', 'ok'); refreshSheets(); renderView(); },
+  pinChange: async () => {
+    if (!(await askCurrentPin('PIN actual'))) return;
+    const pin = await askNewPin(); if (!pin) return;
+    const salt = b64u.enc(rand(16));
+    store.set('lock', Object.assign(lockCfg(), { pinHash: await hashPin(pin, salt), salt, fails: 0 }));
+    toast('PIN cambiado.', 'ok');
+  },
+  lockOff: async () => {
+    if (!(await askCurrentPin('Confirma con tu PIN'))) return;
+    store.del('lock'); toast('Bloqueo desactivado.', 'ok'); refreshSheets(); renderView();
+  },
+  lockNow: () => { closeAllSheets(); showLock(); }
+});
+Object.assign(CHANGES, {
+  presupSet: el => {
+    const v = parseAmount(el.value);
+    quiet(write('setPresupuesto', [el.dataset.cat, v], { ok: v > 0 ? 'Tope de ' + el.dataset.cat + ': ' + money(v, 'PEN') : 'Tope quitado.' }));
+  },
+  movFoto: async (el, sh) => {
+    const file = el.files && el.files[0];
+    if (!file || !sh) return;
+    try {
+      const foto = await compressImage(file);
+      if (sh.state.edit) { await subirFoto(sh.state.edit.id, foto); if (sheets.includes(sh)) { readMovForm(sh); sh.render(); } }
+      else { readMovForm(sh); sh.state.foto = foto; sh.render(); }
+    } catch (e) { toast(e.message, 'error'); }
+  }
+});
+
 /* ============================ CARGA / SINCRONIZACION ============================ */
 async function loadData(manual) {
   if (manual) setBusy(true);
@@ -1920,20 +2494,33 @@ function startApp() {
   if (loadCache()) { reindex(); S.loaded = true; }
   S.filter = store.get('filter', '');
   S.calView = store.get('calView', 'month');
+  S.moneda = store.get('moneda', 'PEN');
   const hash = (location.hash || '').replace('#', '');
   goTab(hash || store.get('tab', 'inicio'));
   renderSelbar();
   loadData();
+  // Bloqueo: si la app estuvo cerrada o en segundo plano mas de 5 minutos.
+  if (lockOn() && Date.now() - store.get('lastActive', 0) > LOCK_AFTER_MS) showLock();
+  markActive();
 }
 
 function boot() {
+  applyAppearance();
+  S.privacy = store.get('privacy', false);
   S.token = store.get('token', null);
   S.user = store.get('user', null);
   if (S.token && !window.LOCAL_SERVER && !apiUrl()) renderLogin('Falta la URL del servidor. Pégala abajo y vuelve a ingresar.');
   else if (S.token) startApp(); else renderLogin();
-  setInterval(backgroundSync, CFG.SYNC_INTERVAL_MS);
-  setInterval(() => { const l = $('#syncLbl'); if (l) l.textContent = syncLabel(); }, 10000);
-  document.addEventListener('visibilitychange', () => { if (!document.hidden) backgroundSync(); });
+  // Casi en tiempo real: getVersion es liviano, se consulta cada 5 s mientras la app esta a la vista.
+  setInterval(backgroundSync, Math.min(CFG.SYNC_INTERVAL_MS || 5000, 5000));
+  setInterval(() => { const l = $('#syncLbl'); if (l) l.textContent = syncLabel(); if (!document.hidden && !lockShown) markActive(); }, 10000);
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden) { if (!lockShown) markActive(); return; }
+    if (lockOn() && Date.now() - store.get('lastActive', 0) > LOCK_AFTER_MS) showLock();
+    else markActive();
+    backgroundSync();
+  });
+  window.addEventListener('pagehide', () => { if (!lockShown) markActive(); });
   window.addEventListener('online', () => backgroundSync());
 
   if ('serviceWorker' in navigator && location.protocol === 'https:') {
@@ -1948,4 +2535,17 @@ function boot() {
     }).catch(() => {});
   }
 }
-document.addEventListener('DOMContentLoaded', boot);
+// Pantalla de entrada: se queda al menos ~0.8 s desde que se abrió la app y se difumina
+// mientras el contenido entra desde abajo.
+function hideSplash() {
+  const sp = $('#splash');
+  if (!sp) return;
+  const reduce = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  const wait = reduce ? 0 : Math.max(0, 800 - performance.now());
+  setTimeout(() => {
+    sp.classList.add('hide');
+    document.body.classList.add('reveal');
+    setTimeout(() => { sp.remove(); document.body.classList.remove('reveal'); }, 1000);
+  }, wait);
+}
+document.addEventListener('DOMContentLoaded', () => { boot(); hideSplash(); });
