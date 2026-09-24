@@ -415,3 +415,48 @@ body.has-sel .sheet-body { padding-bottom: calc(140px + var(--safe-b)); }
 .login .fld input { background: var(--card); }
 .login-err { background: var(--red-bg); color: var(--red); border-radius: 12px; padding: 10px 12px; font-size: 14px; font-weight: 600; margin-top: 4px; }
 .login-foot { margin-top: 30px; font-size: 12px; }
+
+/* ===== v1.1: calendario con parte fija, vista semana, gestos ===== */
+html { touch-action: manipulation; }
+html, body { overscroll-behavior-x: none; }
+#app { overflow-x: clip; }
+#view { touch-action: pan-y; }                 /* el navegador solo desplaza en vertical: el lateral es para cambiar de pestaña */
+.chips-row, .acc-scroll, .alert-row { touch-action: pan-x pan-y; }
+
+.cal-sticky { position: sticky; top: 0; z-index: 25; background: var(--bg); margin: 0 -16px; padding: var(--safe-t) 16px 0; }
+.cal-sticky .top { position: static; padding: 10px 2px 6px; }
+.cal-sticky .chips-row { padding-bottom: 6px; }
+.cal-sticky .cal-dow { background: var(--card); border-radius: var(--r) var(--r) 0 0; border-bottom: .5px solid var(--sep); box-shadow: var(--shadow); }
+.cal-sticky + .cal { border-radius: 0 0 var(--r) var(--r); }
+.cal-sticky + .cal .wk:first-child { border-top: 0; }
+.cal-actions { gap: 6px; }
+.view-seg { flex: none; }
+.view-seg button { min-height: 32px; padding: 5px 9px; }
+.month-title.wk-title { font-size: 18px !important; min-width: 190px; }
+.alert-row { display: flex; gap: 6px; overflow-x: auto; padding: 0 0 8px; scrollbar-width: none; }
+.alert-row::-webkit-scrollbar { display: none; }
+.apill { padding: 6px 11px; border-radius: 99px; font-size: 13px; font-weight: 600; white-space: nowrap; }
+.apill.warn { background: var(--orange-bg); color: var(--orange); }
+.apill.danger { background: var(--red-bg); color: var(--red); }
+
+.zoomable { transform-origin: center top; will-change: transform; }
+.sum-btn { margin: 14px 0 6px; }
+.sum-btn svg { width: 18px; height: 18px; }
+.legend { margin: 10px 2px 4px; justify-content: center; }
+.pinch-hint { margin: 8px 0 0; }
+@media (hover: hover) and (pointer: fine) { .pinch-hint { display: none; } }
+
+.wk-view .card { margin: 8px 0; padding: 0; overflow: hidden; }
+.wk-card .wk-bar { background: transparent; padding: 10px 12px; font-size: 13px; }
+.wk-card .wk-ini { font-size: 13px; }
+.wday-head { display: flex; align-items: center; gap: 10px; width: 100%; padding: 11px 14px; text-align: left; }
+.wd-n { flex: 1; font-size: 15px; color: var(--muted); }
+.wd-n b { font-size: 21px; color: var(--text); margin-right: 4px; }
+.wday.today .wd-n b { color: var(--red); }
+.wd-net { font-weight: 700; font-size: 14px; }
+.wd-bal { font-size: 13px; color: var(--blue); min-width: 86px; text-align: right; }
+.wd-bal.neg { color: var(--red); font-weight: 700; }
+.wday.neg { box-shadow: inset 0 0 0 2px var(--red); }
+.wday .list { border-top: .5px solid var(--sep); border-radius: 0; background: transparent; }
+.wd-add { display: block; width: 100%; padding: 0 14px 12px; text-align: left; color: var(--blue); font-size: 14px; font-weight: 600; }
+.wk-view.locked .wday { opacity: .92; }

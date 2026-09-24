@@ -23,6 +23,7 @@ const S = {
   tab: 'inicio',
   lastSync: 0, pending: 0, loaded: false,
   sumTab: 'total',
+  calView: 'month', week: null, deficits: [],
   idx: { cta: new Map(), enlace: new Map(), meta: new Map() }
 };
 
@@ -386,7 +387,8 @@ const IC = {
   up: '<svg viewBox="0 0 24 24"><path d="m6 15 6-6 6 6"/></svg>',
   down: '<svg viewBox="0 0 24 24"><path d="m6 9 6 6 6-6"/></svg>',
   arrow: '<svg viewBox="0 0 24 24"><path d="M5 12h14m-5-5 5 5-5 5"/></svg>',
-  sync: '<svg viewBox="0 0 24 24"><path d="M20 11a8 8 0 0 0-14.3-4.9L4 8M4 4v4h4M4 13a8 8 0 0 0 14.3 4.9L20 16m0 4v-4h-4"/></svg>'
+  sync: '<svg viewBox="0 0 24 24"><path d="M20 11a8 8 0 0 0-14.3-4.9L4 8M4 4v4h4M4 13a8 8 0 0 0 14.3 4.9L20 16m0 4v-4h-4"/></svg>',
+  chart: '<svg viewBox="0 0 24 24"><path d="M4 20V10M10 20V4M16 20v-7M22 20H2"/></svg>'
 };
 
 /* ============================ LOGIN ============================ */
@@ -628,89 +630,134 @@ function monthStats(monthDate, pred) {
 }
 function isInternalFor(m, pred) { const p = partnerOf(m); return !!(p && pred(p) && pred(m)); }
 
+// Semanas del calendario con su saldo corriente: saldo inicial de la semana + neto diario
+// (misma logica que la intranet). La usan la vista de mes y la de semana.
+function buildWeeks(startStr, endStr, mo) {
+  const t = today();
+  const byDay = {};
+  S.movs.forEach(m => { if (inFlow(m) && m.fecha >= startStr && m.fecha <= endStr) (byDay[m.fecha] = byDay[m.fecha] || []).push(m); });
+  Object.keys(byDay).forEach(k => byDay[k].sort(sortByOrden));
+  const weeks = [], deficits = [];
+  let run = balanceUpTo(addDays(startStr, -1), false);
+  for (let cur = startStr; cur <= endStr; cur = addDays(cur, 7)) {
+    const sat = addDays(cur, 6);
+    const wk = { start: cur, sat, locked: S.locked.includes(sat), ini: run, days: [] };
+    for (let i = 0; i < 7; i++) {
+      const d = addDays(cur, i), dd = pd(d);
+      const moves = byDay[d] || [];
+      const net = sum(moves, m => m.monto);
+      run += net;
+      const other = mo != null && dd.getMonth() !== mo;
+      const neg = run < -0.004 && !other;
+      if (neg) deficits.push({ fecha: d, saldo: run });
+      wk.days.push({ d, dd, i, moves, net, bal: run, other, neg, today: d === t });
+    }
+    wk.fin = run;
+    weeks.push(wk);
+  }
+  return { weeks, deficits };
+}
+function sundayOf(s) { const d = pd(s); d.setDate(d.getDate() - d.getDay()); return dstr(d); }
+function weekLabel(start) {
+  const a = pd(start), b = pd(addDays(start, 6));
+  const mes = x => x.toLocaleDateString(CFG.LOCALE, { month: 'short' }).replace('.', '');
+  return a.getDate() + (a.getMonth() !== b.getMonth() ? ' ' + mes(a) : '') + ' – ' + b.getDate() + ' ' + mes(b) + ' ' + b.getFullYear();
+}
+function wkBar(wk) {
+  return '<div class="wk-bar">' +
+    '<button class="wk-ini" data-act="saldoIni" data-d="' + addDays(wk.start, -1) + '" title="Saldo inicial de la semana">Inicial <b class="' + (wk.ini < 0 ? 'neg' : '') + '">' + money(wk.ini) + '</b></button>' +
+    '<span class="wk-fin">Final <b class="' + (wk.fin < 0 ? 'neg' : '') + '">' + money(wk.fin) + '</b></span>' +
+    '<button class="wk-lock" data-act="lockWeek" data-sat="' + wk.sat + '" data-lock="' + (wk.locked ? '0' : '1') + '">' + (wk.locked ? IC.lock + 'Cerrada' : IC.unlock + 'Abierta') + '</button></div>';
+}
+
 function viewCalendario() {
+  const semana = S.calView === 'week';
+  if (semana) { S.week = S.week || sundayOf(today()); S.month = firstOfMonth(pd(addDays(S.week, 3))); }
   const md = S.month, y = md.getFullYear(), mo = md.getMonth();
-  const t = today(), mk = monthKey(md);
+  const mk = monthKey(md);
   const corr = activeCuentas('Corriente');
   if (S.filter && !corr.some(c => c.id === S.filter)) S.filter = '';
   const fijosOk = S.fijosAplicados.some(a => a.mes === mk);
 
-  let h = '<header class="top cal-top"><div class="month-nav">' +
-    '<button class="icon-btn" data-act="month" data-d="-1" data-mdrop="-1" aria-label="Mes anterior">' + IC.chevL + '</button>' +
-    '<h1 class="month-title">' + esc(monthLabel(md)) + '</h1>' +
-    '<button class="icon-btn" data-act="month" data-d="1" data-mdrop="1" aria-label="Mes siguiente">' + IC.chevR + '</button></div>' +
-    '<div class="cal-actions">' +
-    (S.filter ? '<button class="pill filt" data-act="filter" data-id="" title="Quitar filtro" style="--c:' + ctaColor(S.filter) + '"><i></i>' + esc(ctaName(S.filter)) + ' ✕</button>' : '') +
-    '<button class="pill" data-act="thisMonth">Hoy</button>' +
-    '<button class="pill ' + (fijosOk ? 'done' : 'accent') + '" data-act="openFijos">' + (fijosOk ? 'Fijos ✓' : 'Fijos') + '</button>' +
-    '<button class="icon-btn" data-act="openSearch" aria-label="Buscar">' + IC.search + '</button></div></header>';
+  let model;
+  if (semana) model = buildWeeks(S.week, addDays(S.week, 6), null);
+  else {
+    const first = new Date(y, mo, 1), last = new Date(y, mo + 1, 0);
+    const start = new Date(first); start.setDate(start.getDate() - start.getDay());
+    const end = new Date(last); end.setDate(end.getDate() + (6 - end.getDay()));
+    model = buildWeeks(dstr(start), dstr(end), mo);
+  }
+  S.deficits = model.deficits;
 
+  // ---- Parte fija: mes, acciones, filtro de cuentas, alertas y (en vista mes) los nombres de los dias
+  let h = '<div class="cal-sticky"><header class="top cal-top"><div class="month-nav">' +
+    '<button class="icon-btn" data-act="month" data-d="-1" data-mdrop="-1" aria-label="Anterior">' + IC.chevL + '</button>' +
+    '<h1 class="month-title' + (semana ? ' wk-title' : '') + '">' + esc(semana ? weekLabel(S.week) : monthLabel(md)) + '</h1>' +
+    '<button class="icon-btn" data-act="month" data-d="1" data-mdrop="1" aria-label="Siguiente">' + IC.chevR + '</button></div>' +
+    '<div class="cal-actions">' +
+    '<button class="pill" data-act="thisMonth">Hoy</button>' +
+    '<div class="seg sm view-seg"><button class="' + (semana ? '' : 'on') + '" data-act="calView" data-v="month">Mes</button><button class="' + (semana ? 'on' : '') + '" data-act="calView" data-v="week">Semana</button></div>' +
+    '<button class="pill ' + (fijosOk ? 'done' : 'accent') + '" data-act="openFijos">' + (fijosOk ? 'Fijos ✓' : 'Fijos') + '</button>' +
+    '<button class="icon-btn" data-act="openResumen" aria-label="Resumen del mes">' + IC.chart + '</button>' +
+    '<button class="icon-btn" data-act="openSearch" aria-label="Buscar">' + IC.search + '</button></div></header>';
   if (corr.length > 1) {
     h += '<div class="chips-row"><button class="fchip' + (!S.filter ? ' on' : '') + '" data-act="filter" data-id="">Todas</button>' +
       corr.map(c => '<button class="fchip' + (S.filter === c.id ? ' on' : '') + '" data-act="filter" data-id="' + c.id + '" style="--c:' + c.color + '"><i></i>' + esc(c.nombre) + '</button>').join('') + '</div>';
   }
+  const venc = vencidos();
+  if (venc.length || model.deficits.length) {
+    h += '<div class="alert-row">' +
+      (venc.length ? '<button class="apill warn" data-act="openVencidos">⏰ ' + venc.length + ' vencido(s)</button>' : '') +
+      (model.deficits.length ? '<button class="apill danger" data-act="showDeficit">🚨 Ruptura de caja: ' + model.deficits.slice(0, 4).map(d => pd(d.fecha).getDate()).join(', ') + (model.deficits.length > 4 ? '…' : '') + '</button>' : '') +
+      '</div>';
+  }
+  if (!semana) h += '<div class="cal-dow"><span>Dom</span><span>Lun</span><span>Mar</span><span>Mié</span><span>Jue</span><span>Vie</span><span>Sáb</span></div>';
+  h += '</div>';
 
+  // ---- Contenido
+  if (semana) {
+    const wk = model.weeks[0];
+    const dn = ['Domingo', 'Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado'];
+    h += '<div class="zoomable wk-view' + (wk.locked ? ' locked' : '') + '"><div class="card wk-card">' + wkBar(wk) + '</div>' +
+      wk.days.map(x => '<section class="card wday' + (x.today ? ' today' : '') + (x.neg ? ' neg' : '') + '">' +
+        '<button class="wday-head" data-act="day" data-d="' + x.d + '"><span class="wd-n"><b>' + x.dd.getDate() + '</b> ' + dn[x.i] + '</span>' +
+        (x.moves.length ? '<span class="wd-net ' + (x.net >= 0 ? 'pos' : 'neg') + '">' + moneyPlus(x.net) + '</span>' : '') +
+        '<span class="wd-bal' + (x.bal < 0 ? ' neg' : '') + '">' + money(x.bal) + '</span></button>' +
+        (x.moves.length ? '<div class="list">' + x.moves.map(m => movRow(m)).join('') + '</div>'
+          : (wk.locked ? '' : '<button class="wd-add" data-act="newMov" data-d="' + x.d + '">+ Agregar</button>')) +
+        '</section>').join('') + '</div>';
+  } else {
+    let g = '<div class="cal zoomable">';
+    model.weeks.forEach(wk => {
+      let cells = '';
+      wk.days.forEach(x => {
+        let cls = 'day';
+        if (x.other) cls += ' other';
+        if (x.today) cls += ' today';
+        if (x.neg) cls += ' neg';
+        if (x.i === 0 || x.i === 6) cls += ' wkend';
+        const dots = x.moves.slice(0, 6).map(m => '<i class="' + movClass(m) + '"></i>').join('') + (x.moves.length > 6 ? '<em>+' + (x.moves.length - 6) + '</em>' : '');
+        cells += '<div class="' + cls + '" data-act="day" data-d="' + x.d + '"' + (wk.locked ? '' : ' data-drop="' + x.d + '"') + '>' +
+          '<span class="dn">' + x.dd.getDate() + '</span>' +
+          '<div class="dots">' + dots + '</div><div class="chips">' + x.moves.map(m => chipHtml(m, wk.locked)).join('') + '</div>' +
+          (x.moves.length ? '<div class="dnet ' + (x.net >= 0 ? 'pos' : 'neg') + '">' + (x.net > 0 ? '+' : '') + compact(x.net) + '</div>' +
+            '<div class="dbal' + (x.bal < 0 ? ' neg' : '') + '" title="Saldo al cierre del día">' + compact(x.bal) + '</div>' : '') + '</div>';
+      });
+      g += '<div class="wk' + (wk.locked ? ' locked' : '') + '" data-wk="' + wk.start + '">' + wkBar(wk) + '<div class="wk-days">' + cells + '</div></div>';
+    });
+    h += g + '</div>';
+    h += '<p class="pinch-hint muted small center">Pellizca hacia afuera sobre una semana para verla en detalle.</p>';
+  }
+
+  // ---- Al fondo: resumen y leyenda
   const ms = monthStats(md, inFlow);
+  h += '<button class="btn wide sum-btn" data-act="openResumen">' + IC.chart + ' Resumen de ' + esc(monthLabel(md)) + '</button>';
   h += '<div class="legend">' +
     '<span><i class="lg real"></i>Real + <b class="pos">' + compact(ms.leg.rp) + '</b></span>' +
     '<span><i class="lg realneg"></i>Real − <b class="neg">' + compact(ms.leg.rn) + '</b></span>' +
     '<span><i class="lg proy"></i>Proy + <b>' + compact(ms.leg.pp) + '</b></span>' +
     '<span><i class="lg proy dim"></i>Proy − <b>' + compact(ms.leg.pn) + '</b></span>' +
     '<span><i class="lg venc"></i>Vencido <b class="' + (ms.leg.v >= 0 ? 'pos' : 'neg') + '">' + compact(ms.leg.v) + '</b></span></div>';
-
-  const venc = vencidos();
-  if (venc.length) h += '<button class="alert warn slim" data-act="openVencidos"><span class="al-ico">⏰</span><span><b>' + venc.length + ' proyectado(s) vencido(s)</b> · Revisar</span></button>';
-
-  // Grilla (misma logica de saldo corriente que la intranet: saldo inicial de la semana + neto diario)
-  const first = new Date(y, mo, 1), last = new Date(y, mo + 1, 0);
-  const start = new Date(first); start.setDate(start.getDate() - start.getDay());
-  const end = new Date(last); end.setDate(end.getDate() + (6 - end.getDay()));
-  const byDay = {};
-  S.movs.forEach(m => { if (inFlow(m)) (byDay[m.fecha] = byDay[m.fecha] || []).push(m); });
-  Object.keys(byDay).forEach(k => byDay[k].sort(sortByOrden));
-  const deficits = [];
-  let run = balanceUpTo(addDays(dstr(start), -1), false);
-
-  let g = '<div class="cal"><div class="cal-dow"><span>Dom</span><span>Lun</span><span>Mar</span><span>Mié</span><span>Jue</span><span>Vie</span><span>Sáb</span></div>';
-  for (let cur = dstr(start); cur <= dstr(end); cur = addDays(cur, 7)) {
-    const sat = addDays(cur, 6), locked = S.locked.includes(sat);
-    const ini = run;
-    let cells = '';
-    for (let i = 0; i < 7; i++) {
-      const d = addDays(cur, i), dd = pd(d), other = dd.getMonth() !== mo;
-      const moves = byDay[d] || [];
-      const net = sum(moves, m => m.monto);
-      run += net;
-      const neg = run < -0.004 && !other;
-      if (neg) deficits.push({ fecha: d, saldo: run });
-      let cls = 'day';
-      if (other) cls += ' other';
-      if (d === t) cls += ' today';
-      if (neg) cls += ' neg';
-      if (i === 0 || i === 6) cls += ' wkend';
-      const dots = moves.slice(0, 6).map(m => '<i class="' + movClass(m) + '"></i>').join('') + (moves.length > 6 ? '<em>+' + (moves.length - 6) + '</em>' : '');
-      const chips = moves.map(m => chipHtml(m, locked)).join('');
-      cells += '<div class="' + cls + '" data-act="day" data-d="' + d + '"' + (locked ? '' : ' data-drop="' + d + '"') + '>' +
-        '<span class="dn">' + dd.getDate() + '</span>' +
-        '<div class="dots">' + dots + '</div><div class="chips">' + chips + '</div>' +
-        (moves.length ? '<div class="dnet ' + (net >= 0 ? 'pos' : 'neg') + '">' + (net > 0 ? '+' : '') + compact(net) + '</div>' +
-          '<div class="dbal' + (run < 0 ? ' neg' : '') + '" title="Saldo al cierre del día">' + compact(run) + '</div>' : '') +
-        '</div>';
-    }
-    g += '<div class="wk' + (locked ? ' locked' : '') + '"><div class="wk-bar">' +
-      '<button class="wk-ini" data-act="saldoIni" data-d="' + addDays(cur, -1) + '" title="Saldo inicial de la semana">Inicial <b class="' + (ini < 0 ? 'neg' : '') + '">' + money(ini) + '</b></button>' +
-      '<span class="wk-fin">Final <b class="' + (run < 0 ? 'neg' : '') + '">' + money(run) + '</b></span>' +
-      '<button class="wk-lock" data-act="lockWeek" data-sat="' + sat + '" data-lock="' + (locked ? '0' : '1') + '">' + (locked ? IC.lock + 'Cerrada' : IC.unlock + 'Abierta') + '</button>' +
-      '</div><div class="wk-days">' + cells + '</div></div>';
-  }
-  g += '</div>';
-
-  if (deficits.length) {
-    h += '<div class="alert danger"><span class="al-ico">🚨</span><span><b>Alerta de ruptura de caja</b><br><small>El saldo proyectado no alcanza en: ' +
-      deficits.slice(0, 6).map(d => '<b>' + pd(d.fecha).getDate() + '</b> (' + money(d.saldo) + ')').join(', ') + (deficits.length > 6 ? '…' : '') + '</small></span></div>';
-  }
-  h += g;
-  h += summaryHtml(md, ms);
   return h;
 }
 function chipHtml(m, locked) {
@@ -724,10 +771,18 @@ function chipHtml(m, locked) {
     (m.estado === 'Proyectado' && canEdit ? '<button class="chip-ok" data-act="exec" data-id="' + m.id + '" aria-label="Ejecutar">' + IC.check + '</button>' : '') +
     '</div>';
 }
-function summaryHtml(md, ms) {
+// Resumen por categoria del mes del calendario: ahora es una ventana (hoja) aparte.
+function openResumen() {
+  openSheet({
+    kind: 'resumen', live: true, tall: true,
+    title: () => 'Resumen · ' + monthLabel(S.month),
+    render: () => summaryBody(S.month)
+  });
+}
+function summaryBody(md) {
   const y = md.getFullYear(), mo = md.getMonth();
+  const ms = monthStats(md, inFlow);
   const dAntes = dstr(new Date(y, mo, 0)), dFin = dstr(new Date(y, mo + 1, 0));
-  const open = store.get('sumOpen', true);
   const tabs = [['total', 'Total'], ['real', 'Solo real'], ['proy', 'Solo proyectado']];
   const o = ms[S.sumTab];
   const ini = S.sumTab === 'total' ? balanceUpTo(dAntes, false) : S.sumTab === 'real' ? balanceUpTo(dAntes, true) : null;
@@ -736,8 +791,7 @@ function summaryHtml(md, ms) {
     const ks = Object.keys(obj).sort((a, b) => obj[b] - obj[a]);
     return ks.length ? ks.map(k => '<div class="kv"><span>' + esc(k) + '</span><b class="' + cls + '">' + money(obj[k]) + '</b></div>').join('') : '<p class="muted small">Sin movimientos</p>';
   };
-  let h = '<section class="card summary" id="resumen"><button class="card-head toggle" data-act="toggleSum"><h2>Resumen por categoría</h2><span class="caret">' + (open ? '▾' : '▸') + '</span></button>';
-  if (!open) return h + '</section>';
+  let h = '';
   if (S.filter) h += '<div class="banner warn">🔎 <span>Mostrando solo <b>' + esc(ctaName(S.filter)) + '</b>. <button class="link" data-act="filter" data-id="">Ver todas las cuentas</button></span></div>';
   // Aviso: gastos/ingresos hechos directamente en cuentas de ahorro no entran en este resumen.
   const mk = monthKey(md);
@@ -748,14 +802,14 @@ function summaryHtml(md, ms) {
       ') y no se incluyen aquí. Si son cuentas del día a día, cámbialas a <b>Corriente</b> en Más → Cuentas.</span></div>';
   }
   h += '<div class="seg">' + tabs.map(tb => '<button class="' + (S.sumTab === tb[0] ? 'on' : '') + '" data-act="sumTab" data-t="' + tb[0] + '">' + tb[1] + '</button>').join('') + '</div>';
-  h += '<div class="sum-grid"><div><h4 class="pos">Ingresos</h4>' + list(o.ing, 'pos') + '</div><div><h4 class="neg">Egresos</h4>' + list(o.egr, 'neg') + '</div>' +
+  h += '<div class="summary"><div class="sum-grid"><div><h4 class="pos">Ingresos</h4>' + list(o.ing, 'pos') + '</div><div><h4 class="neg">Egresos</h4>' + list(o.egr, 'neg') + '</div>' +
     '<div class="sum-box">' + (ini != null ? '<div class="kv"><span>Saldo inicial del mes</span><b class="' + (ini < 0 ? 'neg' : '') + '">' + money(ini) + '</b></div>' : '') +
     (o.sumIni ? '<div class="kv"><span>Saldos iniciales de cuentas</span><b class="blue">' + moneyPlus(o.sumIni) + '</b></div>' +
       Object.keys(o.ini).map(k => '<div class="kv sub"><span>' + esc(k) + '</span><span>' + moneyPlus(o.ini[k]) + '</span></div>').join('') : '') +
     '<div class="kv"><span>Total ingresos</span><b class="pos">' + money(o.sumIng) + '</b></div><div class="kv"><span>Total egresos</span><b class="neg">' + money(o.sumEgr) + '</b></div>' +
     '<div class="kv big"><span>Flujo neto</span><b class="' + (o.sumIng - o.sumEgr >= 0 ? 'pos' : 'neg') + '">' + moneyPlus(o.sumIng - o.sumEgr) + '</b></div>' +
-    (fin != null ? '<div class="kv big"><span>Saldo final del mes</span><b class="' + (fin < 0 ? 'neg' : '') + '">' + money(fin) + '</b></div>' : '') + '</div></div>';
-  return h + '</section>';
+    (fin != null ? '<div class="kv big"><span>Saldo final del mes</span><b class="' + (fin < 0 ? 'neg' : '') + '">' + money(fin) + '</b></div>' : '') + '</div></div></div>';
+  return h;
 }
 
 /* ---------- Fila de movimiento (listas) ---------- */
@@ -1429,7 +1483,12 @@ async function toggleWeek(sat, lock) {
 const ACT = {
   tab: el => goTab(el.dataset.tab),
   goCal: () => { S.month = firstOfMonth(pd(today())); goTab('calendario'); },
-  goCalSum: () => { S.month = firstOfMonth(pd(today())); store.set('sumOpen', true); goTab('calendario'); setTimeout(() => { const r = $('#resumen'); if (r) r.scrollIntoView({ behavior: 'smooth' }); }, 50); },
+  goCalSum: () => { S.month = firstOfMonth(pd(today())); S.calView = 'month'; goTab('calendario'); openResumen(); },
+  openResumen: () => openResumen(),
+  showDeficit: () => dialog('<h4>ð¨ Ruptura de caja</h4><p>El saldo proyectado de tus cuentas corrientes no alcanza en:</p><div class="dlg-list">' +
+    S.deficits.map(d => '<button data-v="' + d.fecha + '"><b>' + esc(dayLabel(d.fecha, { weekday: 'short', day: 'numeric', month: 'short' })) + '</b> Â· <span class="neg">' + money(d.saldo) + '</span></button>').join('') +
+    '</div><div class="dlg-btns"><button data-v="">Cerrar</button></div>').then(d => { if (d) openDay(d); }),
+  calView: el => setCalView(el.dataset.v),
   closeSheet: () => closeSheet(),
   newMov: el => openMovForm({ fecha: el.dataset.d, cuentaId: el.dataset.cta }),
   editMov: el => openMovForm({ id: el.dataset.id }),
@@ -1468,13 +1527,16 @@ const ACT = {
     if (!(await ask('Ejecutar todos', '¿Marcar como reales los ' + ids.length + ' proyectados vencidos?', 'Ejecutar'))) return;
     quiet(write('setEstadoMultiple', [ids, 'Real'], { ok: ids.length + ' ejecutados.' }));
   },
-  month: el => { S.month = new Date(S.month.getFullYear(), S.month.getMonth() + (+el.dataset.d), 1); renderView(); },
-  thisMonth: () => { S.month = firstOfMonth(pd(today())); renderView(); },
-  filter: el => { S.filter = el.dataset.id; store.set('filter', S.filter); renderView(); },
+  month: el => {
+    if (S.calView === 'week') S.week = addDays(S.week || sundayOf(today()), 7 * (+el.dataset.d));
+    else S.month = new Date(S.month.getFullYear(), S.month.getMonth() + (+el.dataset.d), 1);
+    renderView();
+  },
+  thisMonth: () => { S.month = firstOfMonth(pd(today())); S.week = sundayOf(today()); renderView(); },
+  filter: el => { S.filter = el.dataset.id; store.set('filter', S.filter); renderView(); refreshSheets(); },
   saldoIni: el => openMovForm({ fecha: el.dataset.d, categoria: CAT_SALDO_INI, modo: 'ingreso' }),
   lockWeek: el => toggleWeek(el.dataset.sat, el.dataset.lock === '1'),
-  toggleSum: () => { store.set('sumOpen', !store.get('sumOpen', true)); renderView(); },
-  sumTab: el => { S.sumTab = el.dataset.t; renderView(); },
+  sumTab: el => { S.sumTab = el.dataset.t; const sh = findSheet('resumen'); if (sh) sh.render(); },
   openVencidos, openSearch, openCats, openCuentas, openFijos, openCuadre, openPassword,
   installHelp: openInstallHelp,
   installNow: async () => { if (!deferredInstall) return; deferredInstall.prompt(); deferredInstall = null; closeSheet(); },
@@ -1709,6 +1771,115 @@ document.addEventListener('keydown', e => {
   });
 })();
 
+/* ============================ VISTAS DEL CALENDARIO Y GESTOS ============================ */
+function setCalView(v, weekStart) {
+  if (v === 'week') {
+    S.week = weekStart || (monthKey(pd(today())) === monthKey(S.month) ? sundayOf(today()) : sundayOf(dstr(S.month)));
+  }
+  const volverA = S.calView === 'week' && v === 'month' ? S.week : null;
+  S.calView = v;
+  store.set('calView', v);
+  renderView();
+  if (volverA) {
+    // Al alejar, deja a la vista la semana que se estaba mirando.
+    const w = $('.wk[data-wk="' + volverA + '"]'), st = $('.cal-sticky');
+    if (w) window.scrollTo(0, Math.max(0, w.getBoundingClientRect().top + window.scrollY - (st ? st.offsetHeight : 0) - 6));
+  } else window.scrollTo(0, 0);
+}
+
+// Deslizar de lado = cambiar de pestaña. Pellizcar en el calendario = mes <-> semana.
+(function gestures() {
+  const TABS = ['inicio', 'calendario', 'ahorro', 'mas'];
+  let sw = null, pinch = null;
+  const dist = (a, b) => Math.hypot(a.clientX - b.clientX, a.clientY - b.clientY);
+  const blocked = el => el.closest('.chips-row, .acc-scroll, input, select, textarea, [draggable="true"]');
+  const view = () => $('#view');
+  const resetView = anim => {
+    const v = view(); if (!v) return;
+    v.style.transition = anim ? 'transform .2s ease-out, opacity .2s' : 'none';
+    v.style.transform = ''; v.style.opacity = '';
+  };
+
+  document.addEventListener('touchstart', e => {
+    const v = view();
+    if (!S.token || sheets.length || dialogOpen || !v || !v.contains(e.target)) { sw = null; return; }
+    if (e.touches.length === 2) {
+      if (sw && sw.axis === 'x') resetView(true);
+      sw = null;
+      if (S.tab !== 'calendario') return;
+      const a = e.touches[0], b = e.touches[1], z = $('.zoomable');
+      pinch = { d0: dist(a, b) || 1, mx: (a.clientX + b.clientX) / 2, my: (a.clientY + b.clientY) / 2, z, s: 1 };
+      if (z) { const r = z.getBoundingClientRect(); z.style.transition = 'none'; z.style.transformOrigin = (pinch.mx - r.left) + 'px ' + (pinch.my - r.top) + 'px'; }
+      return;
+    }
+    if (e.touches.length !== 1 || blocked(e.target)) { sw = null; return; }
+    sw = { x0: e.touches[0].clientX, y0: e.touches[0].clientY, t0: Date.now(), dx: 0, axis: null };
+  }, { passive: true });
+
+  document.addEventListener('touchmove', e => {
+    if (pinch) {
+      if (e.touches.length < 2) return;
+      e.preventDefault();
+      pinch.s = Math.max(0.6, Math.min(1.8, dist(e.touches[0], e.touches[1]) / pinch.d0));
+      if (pinch.z) pinch.z.style.transform = 'scale(' + pinch.s + ')';
+      return;
+    }
+    if (!sw) return;
+    const t = e.touches[0], dx = t.clientX - sw.x0, dy = t.clientY - sw.y0;
+    if (!sw.axis) {
+      if (Math.abs(dx) < 10 && Math.abs(dy) < 10) return;
+      sw.axis = Math.abs(dx) > Math.abs(dy) * 1.3 ? 'x' : 'y';
+    }
+    if (sw.axis !== 'x') return;
+    e.preventDefault();
+    const i = TABS.indexOf(S.tab);
+    const borde = (dx > 0 && i === 0) || (dx < 0 && i === TABS.length - 1);
+    sw.dx = borde ? dx * 0.25 : dx;
+    const v = view();
+    v.style.transition = 'none';
+    v.style.transform = 'translateX(' + sw.dx + 'px)';
+    v.style.opacity = String(1 - Math.min(0.35, Math.abs(sw.dx) / 900));
+  }, { passive: false });
+
+  function endPinch(p) {
+    if (p.z) { p.z.style.transition = 'transform .18s ease-out'; p.z.style.transform = ''; }
+    if (p.s > 1.2 && S.calView !== 'week') {
+      const hit = document.elementFromPoint(p.mx, p.my);
+      const wk = hit && hit.closest('.wk');
+      haptic();
+      setCalView('week', wk ? wk.dataset.wk : null);
+    } else if (p.s < 0.85 && S.calView === 'week') {
+      haptic();
+      setCalView('month');
+    }
+  }
+
+  function end(e) {
+    if (pinch) { if (e.touches && e.touches.length) return; const p = pinch; pinch = null; endPinch(p); return; }
+    if (!sw) return;
+    const s = sw; sw = null;
+    if (s.axis !== 'x') return;
+    const i = TABS.indexOf(S.tab), next = s.dx < 0 ? i + 1 : i - 1;
+    const rapido = Math.abs(s.dx) / Math.max(1, Date.now() - s.t0) > 0.5;
+    if (e.type === 'touchend' && (Math.abs(s.dx) > 70 || (rapido && Math.abs(s.dx) > 30)) && next >= 0 && next < TABS.length) {
+      const v = view(), dir = s.dx < 0 ? -1 : 1;
+      v.style.transition = 'transform .16s ease-in, opacity .16s';
+      v.style.transform = 'translateX(' + (dir * window.innerWidth) + 'px)';
+      v.style.opacity = '0';
+      setTimeout(() => {
+        v.style.transition = 'none';
+        v.style.transform = 'translateX(' + (-dir * window.innerWidth * 0.35) + 'px)';
+        goTab(TABS[next]);
+        requestAnimationFrame(() => requestAnimationFrame(() => resetView(true)));
+      }, 160);
+    } else resetView(true);
+  }
+  document.addEventListener('touchend', end);
+  document.addEventListener('touchcancel', end);
+  // Safari: evita el zoom de la pagina completa (el pellizco lo maneja el calendario).
+  ['gesturestart', 'gesturechange'].forEach(ev => document.addEventListener(ev, e => e.preventDefault()));
+})();
+
 /* ============================ CARGA / SINCRONIZACION ============================ */
 async function loadData(manual) {
   if (manual) setBusy(true);
@@ -1748,6 +1919,7 @@ function startApp() {
   renderShell();
   if (loadCache()) { reindex(); S.loaded = true; }
   S.filter = store.get('filter', '');
+  S.calView = store.get('calView', 'month');
   const hash = (location.hash || '').replace('#', '');
   goTab(hash || store.get('tab', 'inicio'));
   renderSelbar();

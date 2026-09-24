@@ -1,7 +1,7 @@
 /* Service worker: guarda la "cascara" de la app para que abra al instante y sin internet.
  * Los datos NO pasan por aqui (van directo a Apps Script); solo archivos de esta carpeta.
  * Al publicar cambios, sube VERSION (y APP_VERSION en js/config.js). */
-const VERSION = 'fin-1.0.3';
+const VERSION = 'fin-1.1.0';
 const SHELL = ['./', 'index.html', 'css/app.css', 'js/config.js', 'js/app.js', 'manifest.webmanifest',
   'icons/icon-192.png', 'icons/icon-512.png', 'icons/apple-touch-icon.png'];
 
