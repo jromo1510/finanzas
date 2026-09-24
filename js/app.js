@@ -639,7 +639,9 @@ function viewCalendario() {
     '<button class="icon-btn" data-act="month" data-d="-1" data-mdrop="-1" aria-label="Mes anterior">' + IC.chevL + '</button>' +
     '<h1 class="month-title">' + esc(monthLabel(md)) + '</h1>' +
     '<button class="icon-btn" data-act="month" data-d="1" data-mdrop="1" aria-label="Mes siguiente">' + IC.chevR + '</button></div>' +
-    '<div class="cal-actions"><button class="pill" data-act="thisMonth">Hoy</button>' +
+    '<div class="cal-actions">' +
+    (S.filter ? '<button class="pill filt" data-act="filter" data-id="" title="Quitar filtro" style="--c:' + ctaColor(S.filter) + '"><i></i>' + esc(ctaName(S.filter)) + ' ✕</button>' : '') +
+    '<button class="pill" data-act="thisMonth">Hoy</button>' +
     '<button class="pill ' + (fijosOk ? 'done' : 'accent') + '" data-act="openFijos">' + (fijosOk ? 'Fijos ✓' : 'Fijos') + '</button>' +
     '<button class="icon-btn" data-act="openSearch" aria-label="Buscar">' + IC.search + '</button></div></header>';
 
@@ -736,6 +738,15 @@ function summaryHtml(md, ms) {
   };
   let h = '<section class="card summary" id="resumen"><button class="card-head toggle" data-act="toggleSum"><h2>Resumen por categoría</h2><span class="caret">' + (open ? '▾' : '▸') + '</span></button>';
   if (!open) return h + '</section>';
+  if (S.filter) h += '<div class="banner warn">🔎 <span>Mostrando solo <b>' + esc(ctaName(S.filter)) + '</b>. <button class="link" data-act="filter" data-id="">Ver todas las cuentas</button></span></div>';
+  // Aviso: gastos/ingresos hechos directamente en cuentas de ahorro no entran en este resumen.
+  const mk = monthKey(md);
+  const fuera = S.movs.filter(m => m.fecha.startsWith(mk) && isAhorro(m.cuentaId) && !m.enlace && m.categoria !== CAT_SALDO_INI);
+  if (fuera.length) {
+    const ctas = Array.from(new Set(fuera.map(m => ctaName(m.cuentaId))));
+    h += '<div class="banner info">ℹ️ <span>' + fuera.length + ' movimiento(s) de este mes (' + moneyPlus(sum(fuera, m => m.monto)) + ') están en cuentas de <b>ahorro</b> (' + esc(ctas.join(', ')) +
+      ') y no se incluyen aquí. Si son cuentas del día a día, cámbialas a <b>Corriente</b> en Más → Cuentas.</span></div>';
+  }
   h += '<div class="seg">' + tabs.map(tb => '<button class="' + (S.sumTab === tb[0] ? 'on' : '') + '" data-act="sumTab" data-t="' + tb[0] + '">' + tb[1] + '</button>').join('') + '</div>';
   h += '<div class="sum-grid"><div><h4 class="pos">Ingresos</h4>' + list(o.ing, 'pos') + '</div><div><h4 class="neg">Egresos</h4>' + list(o.egr, 'neg') + '</div>' +
     '<div class="sum-box">' + (ini != null ? '<div class="kv"><span>Saldo inicial del mes</span><b class="' + (ini < 0 ? 'neg' : '') + '">' + money(ini) + '</b></div>' : '') +
