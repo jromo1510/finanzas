@@ -67,6 +67,15 @@ const store = {
 /* ============================ API ============================ */
 class ApiError extends Error { constructor(msg, auth) { super(msg); this.auth = !!auth; } }
 
+// URL del servidor: la de js/config.js si esta configurada; si no, la que se pego en la pantalla
+// de ingreso (queda guardada en el telefono). Asi, subir un config.js sin URL no deja la app inutil.
+const API_URL_RE = /^https:\/\/script\.google(usercontent)?\.com\/.+/;
+function apiUrl() {
+  if (CFG.API_URL && API_URL_RE.test(CFG.API_URL)) return CFG.API_URL;
+  const saved = store.get('apiUrl', '');
+  return API_URL_RE.test(saved) ? saved : '';
+}
+
 async function api(action, ...args) {
   const body = JSON.stringify({ a: action, t: S.token, p: args });
   let res;
@@ -74,10 +83,11 @@ async function api(action, ...args) {
     await sleep(action === 'getVersion' ? 30 : 220);
     res = JSON.parse(window.LOCAL_SERVER(body));
   } else {
-    if (!CFG.API_URL || CFG.API_URL.indexOf('http') !== 0) throw new ApiError('Falta configurar la URL del servidor en js/config.js.');
+    const url = apiUrl();
+    if (!url) throw new ApiError('Falta la URL del servidor. Pegala en la pantalla de ingreso.');
     let r;
     try {
-      r = await fetch(CFG.API_URL, { method: 'POST', body, headers: { 'Content-Type': 'text/plain;charset=utf-8' }, redirect: 'follow', cache: 'no-store' });
+      r = await fetch(url, { method: 'POST', body, headers: { 'Content-Type': 'text/plain;charset=utf-8' }, redirect: 'follow', cache: 'no-store' });
     } catch (e) {
       throw new ApiError(navigator.onLine === false ? 'Sin conexión a internet. Revisa tu señal e intenta de nuevo.' : 'No se pudo conectar con el servidor.');
     }
@@ -389,13 +399,16 @@ function renderLogin(msg) {
         '<h1>' + esc(CFG.APP_NAME) + '</h1>' +
         '<p class="muted">Solo para ustedes dos. Ingresa con tu usuario.</p>' +
         '<form data-form="login" autocomplete="on">' +
+          (window.LOCAL_SERVER || apiUrl() ? '' : '<label class="fld"><span>URL del servidor (Apps Script)</span><input name="apiurl" type="url" inputmode="url" autocapitalize="none" autocorrect="off" spellcheck="false" placeholder="https://script.google.com/macros/s/.../exec" required>' +
+            '<small class="muted">Se pide una sola vez. Está en Apps Script → Implementar → Administrar implementaciones.</small></label>') +
           '<label class="fld"><span>Usuario</span><input name="usuario" autocomplete="username" autocapitalize="none" autocorrect="off" spellcheck="false" required></label>' +
           '<label class="fld"><span>Contraseña</span><input name="clave" type="password" autocomplete="current-password" required></label>' +
           (msg ? '<div class="login-err">' + esc(msg) + '</div>' : '') +
           '<button class="btn primary big" type="submit">Entrar</button>' +
         '</form>' +
       '</div>' +
-      '<p class="login-foot muted">v' + esc(CFG.APP_VERSION) + '</p>' +
+      '<p class="login-foot muted">v' + esc(CFG.APP_VERSION) +
+        (store.get('apiUrl', '') && !API_URL_RE.test(CFG.API_URL || '') ? ' · <button class="link small" data-act="resetUrl">Cambiar URL del servidor</button>' : '') + '</p>' +
     '</div>';
   const u = store.get('lastUser', '');
   if (u) { $('[name=usuario]').value = u; $('[name=clave]').focus(); }
@@ -403,6 +416,11 @@ function renderLogin(msg) {
 async function doLogin(form) {
   const btn = $('button[type=submit]', form);
   const usuario = form.usuario.value.trim(), clave = form.clave.value;
+  if (form.apiurl) {
+    const u = form.apiurl.value.trim();
+    if (!API_URL_RE.test(u) || !/\/exec$/.test(u)) { renderLogin('Esa URL no parece la del servidor: debe empezar con https://script.google.com/ y terminar en /exec.'); return; }
+    store.set('apiUrl', u);
+  }
   btn.disabled = true; btn.textContent = 'Entrando...';
   try {
     const dev = (navigator.userAgent.match(/\(([^)]+)\)/) || [, ''])[1].slice(0, 60);
@@ -1450,6 +1468,7 @@ const ACT = {
   installHelp: openInstallHelp,
   installNow: async () => { if (!deferredInstall) return; deferredInstall.prompt(); deferredInstall = null; closeSheet(); },
   logout,
+  resetUrl: () => { store.del('apiUrl'); renderLogin(); },
   forceSync: () => { loadData(true); },
   openCuentaHist: el => openCuentaHist(el.dataset.id),
   newCuenta: el => openCuentaForm({ tipo: el.dataset.tipo }),
@@ -1727,7 +1746,8 @@ function startApp() {
 function boot() {
   S.token = store.get('token', null);
   S.user = store.get('user', null);
-  if (S.token) startApp(); else renderLogin();
+  if (S.token && !window.LOCAL_SERVER && !apiUrl()) renderLogin('Falta la URL del servidor. Pégala abajo y vuelve a ingresar.');
+  else if (S.token) startApp(); else renderLogin();
   setInterval(backgroundSync, CFG.SYNC_INTERVAL_MS);
   setInterval(() => { const l = $('#syncLbl'); if (l) l.textContent = syncLabel(); }, 10000);
   document.addEventListener('visibilitychange', () => { if (!document.hidden) backgroundSync(); });
