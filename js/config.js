@@ -2,7 +2,7 @@
 window.APP_CONFIG = {
   // URL de la Aplicacion web de Apps Script (Implementar > Administrar implementaciones).
   // Termina en /exec. Ejemplo: 'https://script.google.com/macros/s/AKfycb.../exec'
-  API_URL: 'https://script.google.com/macros/s/AKfycbxEeK-_-pSrAq0Zrm-f0CZ27jTQ1MbnjbcPsdtKm-Rc3MrYsv7TV0OTuFLIjtZ7OMvP/exec',
+  API_URL: 'PEGA_AQUI_LA_URL_DE_TU_APPS_SCRIPT',
 
   APP_NAME: 'Finanzas',
   CURRENCY: 'S/',

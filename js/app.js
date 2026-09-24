@@ -584,9 +584,17 @@ function deficitDays(monthDate, pred) {
 }
 function monthStats(monthDate, pred) {
   const mk = monthKey(monthDate), t = today();
-  const st = { total: { ing: {}, egr: {}, sumIng: 0, sumEgr: 0 }, real: { ing: {}, egr: {}, sumIng: 0, sumEgr: 0 }, proy: { ing: {}, egr: {}, sumIng: 0, sumEgr: 0 }, leg: { rp: 0, rn: 0, pp: 0, pn: 0, v: 0 } };
+  const bucket = () => ({ ing: {}, egr: {}, sumIng: 0, sumEgr: 0, ini: {}, sumIni: 0 });
+  const st = { total: bucket(), real: bucket(), proy: bucket(), leg: { rp: 0, rn: 0, pp: 0, pn: 0, v: 0 } };
   S.movs.forEach(m => {
-    if (!m.fecha.startsWith(mk) || !pred(m) || m.categoria === CAT_SALDO_INI) return;
+    if (!m.fecha.startsWith(mk) || !pred(m)) return;
+    // Los saldos iniciales no son ingresos del mes, pero si cambian el saldo: van en su propia fila
+    // para que Saldo inicial + Saldos iniciales de cuentas + Flujo neto = Saldo final.
+    if (m.categoria === CAT_SALDO_INI) {
+      const nom = ctaName(m.cuentaId);
+      [st.total, st[m.estado === 'Real' ? 'real' : 'proy']].forEach(o => { o.ini[nom] = (o.ini[nom] || 0) + m.monto; o.sumIni += m.monto; });
+      return;
+    }
     const real = m.estado === 'Real';
     if (real) { if (m.monto >= 0) st.leg.rp += m.monto; else st.leg.rn -= m.monto; }
     else if (m.fecha < t) st.leg.v += m.monto;
@@ -713,6 +721,8 @@ function summaryHtml(md, ms) {
   h += '<div class="seg">' + tabs.map(tb => '<button class="' + (S.sumTab === tb[0] ? 'on' : '') + '" data-act="sumTab" data-t="' + tb[0] + '">' + tb[1] + '</button>').join('') + '</div>';
   h += '<div class="sum-grid"><div><h4 class="pos">Ingresos</h4>' + list(o.ing, 'pos') + '</div><div><h4 class="neg">Egresos</h4>' + list(o.egr, 'neg') + '</div>' +
     '<div class="sum-box">' + (ini != null ? '<div class="kv"><span>Saldo inicial del mes</span><b class="' + (ini < 0 ? 'neg' : '') + '">' + money(ini) + '</b></div>' : '') +
+    (o.sumIni ? '<div class="kv"><span>Saldos iniciales de cuentas</span><b class="blue">' + moneyPlus(o.sumIni) + '</b></div>' +
+      Object.keys(o.ini).map(k => '<div class="kv sub"><span>' + esc(k) + '</span><span>' + moneyPlus(o.ini[k]) + '</span></div>').join('') : '') +
     '<div class="kv"><span>Total ingresos</span><b class="pos">' + money(o.sumIng) + '</b></div><div class="kv"><span>Total egresos</span><b class="neg">' + money(o.sumEgr) + '</b></div>' +
     '<div class="kv big"><span>Flujo neto</span><b class="' + (o.sumIng - o.sumEgr >= 0 ? 'pos' : 'neg') + '">' + moneyPlus(o.sumIng - o.sumEgr) + '</b></div>' +
     (fin != null ? '<div class="kv big"><span>Saldo final del mes</span><b class="' + (fin < 0 ? 'neg' : '') + '">' + money(fin) + '</b></div>' : '') + '</div></div>';
