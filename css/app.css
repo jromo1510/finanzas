@@ -590,3 +590,12 @@ body.locked #app { filter: blur(18px); }
 .confetti { position: fixed; inset: 0; width: 100vw; height: 100vh; pointer-events: none; z-index: 700; }
 .sync-chip { white-space: nowrap; }
 .view-inicio .top h1 { font-size: clamp(20px, 6vw, 30px); }
+
+/* ===== Tarjetas de credito ===== */
+.tc-row { display: block; width: 100%; text-align: left; background: var(--card2); border-radius: 14px; padding: 12px; margin: 8px 0; border-left: 4px solid var(--c); }
+.tc-top { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; }
+.tc-name { font-weight: 650; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tc-debt { font-weight: 700; color: var(--red); white-space: nowrap; }
+.tc-debt small { color: var(--muted); font-weight: 600; }
+.tc-sub { margin-top: 6px; }
+.tc-block { background: var(--card2); border-radius: 14px; padding: 4px 12px; margin: 10px 0; }
