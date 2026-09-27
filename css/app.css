@@ -619,3 +619,10 @@ textarea.inp { resize: vertical; font-size: 15px; margin: 6px 0; }
 .cal-bottom { margin-top: 12px; }
 .cal-bottom .chips-row { padding: 0 0 8px; }
 .cal-tools { display: flex; justify-content: space-between; align-items: center; gap: 8px; margin: 4px 0 0; }
+.daybox.sm { flex-direction: column; line-height: 1; font-size: 15px; width: 40px; height: 40px; }
+.daybox.sm small { font-size: 10px; color: var(--muted); font-weight: 600; text-transform: uppercase; }
+.map-card { padding: 10px 12px; }
+.map-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 6px 0; border-bottom: .5px solid var(--sep); font-size: 14px; }
+.map-row:last-child { border-bottom: 0; }
+.map-row select { width: 58%; flex: none; min-height: 38px; }
+.map-row.recibe span { color: var(--muted); font-size: 13px; }

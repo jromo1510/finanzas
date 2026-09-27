@@ -6,7 +6,7 @@
 'use strict';
 
 const CFG = Object.assign({ CURRENCY: 'S/', LOCALE: 'es-PE', SYNC_INTERVAL_MS: 15000, APP_NAME: 'Finanzas', APP_VERSION: '1.0.0' }, window.APP_CONFIG || {});
-CFG.APP_VERSION = '2.2.1'; // la version la marca este archivo, no config.js
+CFG.APP_VERSION = '2.3.1'; // la version la marca este archivo, no config.js
 const CAT_TRANSF = 'TRANSF. CUENTAS';
 const CAT_SALDO_INI = 'SALDO INICIAL';
 const CAT_PROTEGIDAS = [CAT_SALDO_INI, CAT_TRANSF];
@@ -880,7 +880,7 @@ function chipHtml(m, locked) {
   return '<div class="chip ' + movClass(m) + sel + '" data-act="chip" data-id="' + m.id + '"' + (canEdit ? ' draggable="true" data-chip="' + m.id + '"' : '') +
     ' title="' + esc(m.categoria + (m.detalle ? ' - ' + m.detalle : '') + ' · ' + ctaName(m.cuentaId)) + '">' +
     (canEdit ? '<button class="chip-x" data-act="quickDel" data-id="' + m.id + '" aria-label="Eliminar">' + IC.x + '</button>' : '') +
-    '<span class="chip-cat">' + catIcon(m.categoria) + ' ' + esc(m.virtual ? 'Pago ' + ctaName(m.cardId) : m.detalle && m.categoria === CAT_TRANSF ? m.detalle : m.categoria) + '</span>' +
+    '<span class="chip-cat">' + catIcon(m.categoria) + ' ' + esc(m.virtual ? (m.titulo || 'Pago ' + ctaName(m.cardId)) : m.detalle && m.categoria === CAT_TRANSF ? m.detalle : m.categoria) + '</span>' +
     '<span class="chip-amt">' + compact(m.monto) + '</span>' +
     (m.estado === 'Proyectado' && (canEdit || m.virtual) ? '<button class="chip-ok" data-act="exec" data-id="' + m.id + '" aria-label="Ejecutar">' + IC.check + '</button>' : '') +
     '</div>';
@@ -938,9 +938,9 @@ function movRow(m, o) {
   o = o || {};
   const locked = isMovLocked(m);
   const sel = S.sel.has(m.id);
-  const est = m.revisar ? 'Por completar' : m.virtual ? (m.fecha < today() ? 'Pago vencido' : 'Pago calculado') : m.estado === 'Real' ? 'Real' : (m.fecha < today() ? 'Vencido' : 'Proyectado');
+  const est = m.revisar ? 'Por completar' : m.virtual ? (m.fecha < today() ? 'Pago vencido' : m.cuota ? 'Cuota' : 'Pago calculado') : m.estado === 'Real' ? 'Real' : (m.fecha < today() ? 'Vencido' : 'Proyectado');
   const p = partnerOf(m);
-  const title = m.revisar && m.detalle ? m.detalle : m.virtual ? 'Pago ' + ctaName(m.cardId) + (m.cur === 'USD' ? ' (US$)' : '') : m.categoria === CAT_TRANSF && p ? (m.monto < 0 ? 'A ' + ctaName(p.cuentaId) : 'Desde ' + ctaName(p.cuentaId)) : m.categoria;
+  const title = m.revisar && m.detalle ? m.detalle : m.virtual ? (m.titulo || 'Pago ' + ctaName(m.cardId)) : m.categoria === CAT_TRANSF && p ? (m.monto < 0 ? 'A ' + ctaName(p.cuentaId) : 'Desde ' + ctaName(p.cuentaId)) : m.categoria;
   const meta = m.metaId ? S.idx.meta.get(m.metaId) : null;
   let acts = '';
   if (S.selMode) acts = '<span class="ck' + (sel ? ' on' : '') + '">' + IC.check + '</span>';
@@ -2621,13 +2621,14 @@ function cardStatus(card, cur) {
   const credAfter = sum(credits.filter(c => c.fecha > L), c => c.monto);
   let pend = billedL - credL - credAfter, excess = 0;
   if (pend < 0) { excess = -pend; pend = 0; }
-  const stmts = [{ close: L, due: dueOf(L, cfg), monto: pend, bruto: billedL - credL, cerrado: true }];
+  const Lprev = shiftClose(L, cfg, -1);
+  const stmts = [{ close: L, due: dueOf(L, cfg), monto: pend, bruto: billedL - credL, cerrado: true, lines: lines.filter(l => l.close > Lprev && l.close <= L) }];
   let prev = L;
   for (let k = 1; k <= 12; k++) {
     const X = shiftClose(L, cfg, k);
     const amt = sum(lines.filter(l => l.close > prev && l.close <= X), l => l.monto);
     const use = Math.min(excess, amt); excess -= use;
-    stmts.push({ close: X, due: dueOf(X, cfg), monto: amt - use, bruto: amt, cerrado: false });
+    stmts.push({ close: X, due: dueOf(X, cfg), monto: amt - use, bruto: amt, cerrado: false, lines: lines.filter(l => l.close > prev && l.close <= X) });
     prev = X;
   }
   const real = x => x.m.estado === 'Real';
@@ -2641,12 +2642,24 @@ function computeVirtual() {
       const st = cardStatus(card, cur);
       const payId = st && payAccount(card, cur);
       if (!st || !payId) return;
+      const base = { virtual: true, cardId: card.id, cur, cuentaId: payId, categoria: 'PAGO TARJETA', tipo: 'Salida', estado: 'Proyectado',
+        metaId: '', enlace: '', por: '', origen: 'TARJETA', moneda: cur };
+      const tag = cur === 'USD' ? ' (US$)' : '';
       st.stmts.forEach(s => {
         if (!(s.monto > 0.005)) return;
-        out.push({ id: 'VIRT|' + card.id + '|' + cur + '|' + s.close, virtual: true, cardId: card.id, cur, close: s.close,
-          fecha: s.due, cuentaId: payId, categoria: 'PAGO TARJETA', tipo: 'Salida', monto: -Math.round(s.monto * 100) / 100, estado: 'Proyectado',
-          detalle: 'Pago ' + card.nombre + (cur === 'USD' ? ' (US$)' : '') + ' · corte ' + shortDate(s.close),
-          metaId: '', enlace: '', por: '', origen: 'TARJETA', orden: 9e15, moneda: cur });
+        const cuotas = s.lines.filter(l => l.n > 1), resto = sum(s.lines.filter(l => l.n <= 1), l => l.monto);
+        const separar = cuotas.length && Math.abs(sum(s.lines, l => l.monto) - s.monto) < 0.01;
+        if (!separar) {
+          out.push(Object.assign({}, base, { id: 'VIRT|' + card.id + '|' + cur + '|' + s.close, close: s.close, fecha: s.due, orden: 9e15,
+            monto: -Math.round(s.monto * 100) / 100, titulo: 'Pago ' + card.nombre + tag,
+            detalle: 'Estado de cuenta · corte ' + shortDate(s.close) + (cuotas.length ? ' · incluye ' + cuotas.length + ' cuota(s)' : '') }));
+          return;
+        }
+        if (resto > 0.005) out.push(Object.assign({}, base, { id: 'VIRT|' + card.id + '|' + cur + '|' + s.close + '|c', close: s.close, fecha: s.due, orden: 9e15,
+          monto: -Math.round(resto * 100) / 100, titulo: 'Pago ' + card.nombre + tag, detalle: 'Consumos del ciclo · corte ' + shortDate(s.close) }));
+        cuotas.forEach((l, k) => out.push(Object.assign({}, base, { id: 'VIRT|' + card.id + '|' + cur + '|' + s.close + '|q' + k, close: s.close, fecha: s.due, orden: 9e15 + k + 1,
+          monto: -Math.round(l.monto * 100) / 100, cuota: (l.i + 1) + '/' + l.n, compraId: l.m.id,
+          titulo: 'Cuota ' + (l.i + 1) + '/' + l.n + ' · ' + (l.m.detalle || l.m.categoria), detalle: card.nombre + tag + ' · corte ' + shortDate(s.close) })));
       });
     });
   });
@@ -2714,6 +2727,25 @@ function openTarjeta(id) {
         const q = m.cuotaMonto > 0 ? m.cuotaMonto : Math.abs(m.monto) / m.cuotas;
         return { m, pagadas, q, resta: (m.cuotas - pagadas) * q };
       }).filter(x => x.pagadas < x.m.cuotas);
+      // Cuotas por pagar: cada cuota con la fecha de pago del estado de cuenta en que se factura.
+      const porPagar = [], pendPorCorte = {};
+      ['PEN', 'USD'].forEach(c => { const st = cardStatus(card, c); pendPorCorte[c] = {}; if (st) st.stmts.forEach(x => { pendPorCorte[c][x.close] = x.monto; }); });
+      S.movs.filter(m => m.cuentaId === id && m.cuotas > 1 && m.monto < 0).forEach(m => {
+        const c0 = closeOf(m.fecha, cfg), q = m.cuotaMonto > 0 ? m.cuotaMonto : Math.abs(m.monto) / m.cuotas;
+        for (let i = 0; i < m.cuotas; i++) {
+          const cl = shiftClose(c0, cfg, i), due = dueOf(cl, cfg);
+          const pend = pendPorCorte[movCur(m)][cl];
+          if (due >= today() && !(pend != null && pend < 0.005)) porPagar.push({ m, i, due, q }); // se quitan las de estados de cuenta ya pagados
+        }
+      });
+      porPagar.sort((a, b) => a.due < b.due ? -1 : a.due > b.due ? 1 : 0);
+      if (porPagar.length) {
+        const tot = {}; porPagar.forEach(x => { const c = movCur(x.m); tot[c] = (tot[c] || 0) + x.q; });
+        h += '<h4 class="sec">Cuotas por pagar (' + porPagar.length + ')</h4><p class="muted small">Total pendiente en cuotas: ' + Object.keys(tot).map(c => money(tot[c], c)).join(' + ') + '. Cada una aparece en el calendario como proyectado en su fecha de pago.</p>' +
+          '<div class="list">' + porPagar.slice(0, 36).map(x => '<button class="li" data-act="editMov" data-id="' + x.m.id + '"><span class="daybox sm">' + pd(x.due).getDate() + '<small>' + esc(pd(x.due).toLocaleDateString(CFG.LOCALE, { month: 'short' }).replace('.', '')) + '</small></span>' +
+            '<div class="li-main"><b>' + esc(x.m.detalle || x.m.categoria) + '</b><small>Cuota ' + (x.i + 1) + ' de ' + x.m.cuotas + '</small></div><b>' + money(x.q, movCur(x.m)) + '</b></button>').join('') + '</div>' +
+          (porPagar.length > 36 ? '<p class="muted small center">y ' + (porPagar.length - 36) + ' más...</p>' : '');
+      }
       if (cuotas.length) {
         h += '<h4 class="sec">Compras en cuotas</h4><div class="list">' + cuotas.map(x => '<button class="li" data-act="editMov" data-id="' + x.m.id + '"><span class="cat-ico static">' + catIcon(x.m.categoria) + '</span><div class="li-main"><b>' + esc(x.m.detalle || x.m.categoria) + '</b>' +
           '<small>Cuota ' + Math.min(x.m.cuotas, x.pagadas + 1) + ' de ' + x.m.cuotas + ' · ' + money(x.q, movCur(x.m)) + '/mes' + (x.m.cuotaMonto > 0 ? ' · con intereses ' + money(x.q * x.m.cuotas - Math.abs(x.m.monto), movCur(x.m)) : '') + '</small></div><b>' + money(x.resta, movCur(x.m)) + '</b></button>').join('') + '</div>';
@@ -2772,6 +2804,7 @@ function openCorreos() {
         h += '<div class="btn-row"><button class="btn" data-act="correoSync">Revisar ahora</button></div>';
         h += '<details class="cats"' + (S.correos && S.correos.conectado ? '' : ' open') + '><summary>Cómo reenviar los avisos desde Outlook</summary>' + pasos + '<p class="muted small">Solo se leen los correos de los bancos de la lista de abajo; el resto de ese Gmail no se toca.</p></details>';
       }
+      if (st && st.titulares) h += cuentasTitularHtml(st);
       const pend = porCompletar();
       if (pend.length) h += '<h4 class="sec">Por completar (' + pend.length + ')</h4><p class="muted small">Toca cada uno para revisar la categoría y el detalle. Al guardar queda completo y la app aprende la categoría de ese comercio.</p>' +
         '<div class="list">' + pend.slice(0, 60).map(m => movRow(m, { date: true })).join('') + '</div>' +
@@ -2780,13 +2813,17 @@ function openCorreos() {
       if (b.length) {
         const opts = cuentaOpts('', 'active');
         h += '<h4 class="sec">Bandeja (' + b.length + ')</h4><p class="muted small">Correos del banco que no pude asignar a una cuenta (no reconocí los 4 dígitos, o no encontré el monto).</p>' +
-          b.map(c => '<div class="card flat bandeja" data-msg="' + esc(c.id) + '"><div class="kv"><span><b>' + esc(c.comercio || c.asunto) + '</b><br><small>' + esc(c.fecha) + ' · ' + esc(c.from) + (c.ult4 ? ' · ****' + esc(c.ult4) : '') + '</small></span>' +
+          b.map(c => '<div class="card flat bandeja" data-msg="' + esc(c.id) + '"><div class="kv"><span><b>' + esc(c.comercio || c.asunto) + '</b><br><small>' + esc(c.fecha) + ' · ' + esc(c.from) + (c.ult4 ? ' · ****' + esc(c.ult4) : '') + (c.titular ? ' · ' + esc(c.titular) : ' · <span class="neg">sin nombre de titular</span>') + '</small></span>' +
             '<b class="' + (c.tipo === 'Ingreso' ? 'pos' : 'neg') + '">' + (c.monto > 0 ? (c.tipo === 'Ingreso' ? '+' : '-') + money(c.monto, c.moneda) : '¿monto?') + '</b></div>' +
             (c.monto > 0 ? '<label class="fld"><span>¿De qué cuenta o tarjeta es?</span><select data-cta>' + opts + '</select></label>' +
-              (c.ult4 ? '<label class="chk"><input type="checkbox" data-rec checked> Recordar: todo lo que termine en ' + esc(c.ult4) + ' es de esta cuenta</label>' : '') : '<p class="muted small">No encontré el monto en este correo. Regístralo a mano si corresponde.</p>') +
+              (c.ult4 || c.dom ? '<label class="chk"><input type="checkbox" data-rec checked> Recordar: ' + (c.ult4 ? 'todo lo que termine en ' + esc(c.ult4) : 'todo lo que llegue de ' + esc(c.dom) + ' sin número') + ' es de esta cuenta</label>' : '') : '<p class="muted small">No encontré el monto en este correo. Regístralo a mano si corresponde.</p>') +
             '<div class="btn-row tight">' + (c.monto > 0 ? '<button class="btn sm primary" data-act="correoRegistrar" data-id="' + esc(c.id) + '">Registrar</button>' : '') +
             '<button class="btn sm ghost" data-act="correoIgnorar" data-id="' + esc(c.id) + '">Ignorar</button></div></div>').join('');
       }
+      if (st) h += '<details class="cats"' + (S.correos && S.correos.conectado ? '' : ' open') + '><summary>¿De quién son los correos?</summary><p class="muted small">Solo se registran los avisos dirigidos a estos titulares (el nombre que pone el banco en el correo). Uno por línea.</p>' +
+        '<textarea class="inp" rows="3" data-tit>' + esc((st.titulares || []).join('\n')) + '</textarea>' +
+        '<p class="muted small">Y se ignoran los que estén a nombre de:</p><textarea class="inp" rows="2" data-exc>' + esc((st.excluir || []).join('\n')) + '</textarea>' +
+        '<button class="btn sm wide" data-act="correoNombres">Guardar nombres</button></details>';
       if (st) h += '<details class="cats"><summary>Remitentes de bancos que se leen</summary><p class="muted small">Una por línea (parte del correo del remitente, ej. <i>bcp.com.pe</i>). Solo se abren correos de estos remitentes.</p>' +
         '<textarea class="inp" rows="6" data-rem>' + esc((st.remitentes || []).join('\n')) + '</textarea><button class="btn sm wide" data-act="correoRemitentes">Guardar remitentes</button></details>';
       return h;
@@ -2794,8 +2831,34 @@ function openCorreos() {
   });
   cargarEstadoCorreo(sh);
 }
+// Cuenta de cada titular por banco: a donde van sus constancias de debito, transferencias, Yape y Plin.
+function cuentasTitularHtml(st) {
+  const map = st.cuentas || {}, vacio = !Object.keys(map).some(t => Object.keys(map[t] || {}).length);
+  const cuentas = S.cuentas.filter(c => c.activa && c.tipo !== 'Tarjeta');
+  const sel = (tit, key, val) => '<select class="inp sm" data-tit="' + esc(tit) + '" data-key="' + esc(key) + '"><option value="">—</option>' +
+    cuentas.map(c => '<option value="' + c.id + '"' + (c.id === val ? ' selected' : '') + '>' + esc(c.nombre) + '</option>').join('') + '</select>';
+  const principales = ['BCP', 'YAPE', 'BBVA', 'INTERBANK'];
+  const bancos = (st.bancos || []).slice().sort((a, b) => (principales.indexOf(a) + 1 || 99) - (principales.indexOf(b) + 1 || 99));
+  return '<details class="cats"' + (vacio ? ' open' : '') + '><summary>Cuentas de cada titular</summary>' +
+    '<p class="muted small">A qué cuenta va cada constancia (débito, transferencias, Yape, Plin) según a nombre de quién llega y de qué banco. Los consumos con <b>tarjeta de crédito</b> van siempre a la tarjeta por sus 4 dígitos.</p>' +
+    st.titulares.map(tit => {
+      const m = map[tit] || {};
+      const filas = b => '<div class="map-row"><span>' + esc(({ BCP: 'BCP', YAPE: 'Yape', BBVA: 'BBVA', INTERBANK: 'Interbank', SCOTIABANK: 'Scotiabank', BANBIF: 'BanBif', PICHINCHA: 'Pichincha', FALABELLA: 'Falabella', RIPLEY: 'Ripley' })[b] || b) + '</span>' + sel(tit, b, m[b]) + '</div>';
+      const top = bancos.filter(b => principales.includes(b) || m[b]), rest = bancos.filter(b => !top.includes(b));
+      return '<div class="card flat map-card"><b>' + esc(tit) + '</b>' + top.map(filas).join('') +
+        (rest.length ? '<details><summary class="small">Otros bancos</summary>' + rest.map(filas).join('') + '</details>' : '') +
+        '<div class="map-row recibe"><span>Recibe transferencias de ' + esc(st.titulares.filter(x => x !== tit).join(' / ') || 'los demás') + ' en</span>' + sel(tit, '_recibe', m._recibe) + '</div></div>';
+    }).join('') +
+    '<p class="muted small">Si le envías plata al otro titular (Plin, Yape, transferencia), se registra como transferencia hacia su cuenta de "Recibe", no como gasto, y su aviso de "recibiste" no se duplica.</p>' +
+    '<button class="btn sm wide primary" data-act="correoCuentas">Guardar cuentas</button></details>';
+}
 Object.assign(ACT, {
   openCorreos: () => openCorreos(),
+  correoCuentas: async el => {
+    const map = {};
+    $$('select[data-tit]', el.closest('details')).forEach(s => { const t = s.dataset.tit; map[t] = map[t] || {}; if (s.value) map[t][s.dataset.key] = s.value; });
+    try { S.correoEstado = await api('setCuentasCorreo', map); refreshSheets(); toast('Cuentas guardadas. Los próximos correos se registrarán solos.', 'ok'); } catch (e) { if (!e.auth) toast(e.message, 'error'); }
+  },
   correoSync: async () => {
     toast('Revisando tu correo...', 'info');
     try { await write('syncCorreosAhora', [], {}); await loadData(); await cargarEstadoCorreo(findSheet('correos')); toast('Listo.', 'ok'); } catch (e) {}
@@ -2810,6 +2873,10 @@ Object.assign(ACT, {
     const ids = porCompletar().map(m => m.id);
     if (!ids.length || !(await ask('Marcar como revisados', 'Los ' + ids.length + ' movimientos quedarán con la categoría que tienen ahora.', 'Marcar'))) return;
     quiet(write('marcarRevisado', [ids], { ok: 'Listo.' }));
+  },
+  correoNombres: async el => {
+    const box = el.closest('details'), sp = t => $(t, box).value.split(/\n|,/).map(x => x.trim()).filter(Boolean);
+    try { S.correoEstado = await api('setNombresCorreo', sp('[data-tit]'), sp('[data-exc]')); refreshSheets(); toast('Nombres guardados.', 'ok'); } catch (e) { if (!e.auth) toast(e.message, 'error'); }
   },
   correoRemitentes: async el => {
     const list = $('[data-rem]', el.closest('details')).value.split(/\n|,/).map(s => s.trim()).filter(Boolean);
