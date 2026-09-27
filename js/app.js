@@ -6,7 +6,7 @@
 'use strict';
 
 const CFG = Object.assign({ CURRENCY: 'S/', LOCALE: 'es-PE', SYNC_INTERVAL_MS: 15000, APP_NAME: 'Finanzas', APP_VERSION: '1.0.0' }, window.APP_CONFIG || {});
-CFG.APP_VERSION = '2.3.1'; // la version la marca este archivo, no config.js
+CFG.APP_VERSION = '2.3.2'; // la version la marca este archivo, no config.js
 const CAT_TRANSF = 'TRANSF. CUENTAS';
 const CAT_SALDO_INI = 'SALDO INICIAL';
 const CAT_PROTEGIDAS = [CAT_SALDO_INI, CAT_TRANSF];
@@ -746,7 +746,12 @@ function isInternalFor(m, pred) { const p = partnerOf(m); return !!(p && pred(p)
 function buildWeeks(startStr, endStr, mo) {
   const t = today();
   const byDay = {};
-  M().forEach(m => { if (inFlow(m) && m.fecha >= startStr && m.fecha <= endStr) (byDay[m.fecha] = byDay[m.fecha] || []).push(m); });
+  const todos = {};
+  M().forEach(m => {
+    if (m.fecha < startStr || m.fecha > endStr) return;
+    (todos[m.fecha] = todos[m.fecha] || []).push(m);
+    if (inFlow(m)) (byDay[m.fecha] = byDay[m.fecha] || []).push(m);
+  });
   Object.keys(byDay).forEach(k => byDay[k].sort(sortByOrden));
   const weeks = [], deficits = [];
   let run = balanceUpTo(addDays(startStr, -1), false);
@@ -761,7 +766,7 @@ function buildWeeks(startStr, endStr, mo) {
       const other = mo != null && dd.getMonth() !== mo;
       const neg = run < -0.004 && !other;
       if (neg) deficits.push({ fecha: d, saldo: run });
-      wk.days.push({ d, dd, i, moves, net, bal: run, other, neg, today: d === t });
+      wk.days.push({ d, dd, i, moves, net, bal: run, other, neg, today: d === t, todos: todos[d] || [] });
     }
     wk.fin = run;
     weeks.push(wk);
@@ -804,23 +809,11 @@ function viewCalendario() {
   // ---- Parte fija (minima): nombre del mes, Hoy y buscar; luego los nombres de los dias.
   // Mes anterior/siguiente se cambia deslizando; lo demas (vista, moneda, cuentas, fijos, alertas) va al fondo.
   let h = '<div class="cal-sticky"><header class="top cal-top slim">' +
-    '<h1 class="month-title' + (semana ? ' wk-title' : '') + '">' + esc(semana ? weekLabel(S.week) : monthLabel(md)) + '</h1>' +
+    '<h1 class="month-title' + (semana ? ' wk-title' : '') + '">' + esc(semana ? weekLabel(S.week) : monthLabel(md).replace(' de ', ' ')) + '</h1>' +
     '<div class="cal-actions"><button class="pill" data-act="thisMonth">Hoy</button>' +
-    '<button class="icon-btn" data-act="openSearch" aria-label="Buscar">' + IC.search + '</button></div></header>';
-  let abajo = '';
-  const corrCur = corr.filter(c => (c.moneda || 'PEN') === S.moneda);
-  if (corrCur.length > 1 || hasUSD()) {
-    abajo += '<div class="chips-row">' + (hasUSD() ? '<div class="seg sm cur-seg"><button class="' + (S.moneda === 'PEN' ? 'on' : '') + '" data-act="moneda" data-v="PEN">S/</button><button class="' + (S.moneda === 'USD' ? 'on' : '') + '" data-act="moneda" data-v="USD">US$</button></div>' : '') +
-      (corrCur.length > 1 ? '<button class="fchip' + (!S.filter ? ' on' : '') + '" data-act="filter" data-id="">Todas</button>' +
-      corrCur.map(c => '<button class="fchip' + (S.filter === c.id ? ' on' : '') + '" data-act="filter" data-id="' + c.id + '" style="--c:' + c.color + '"><i></i>' + esc(c.nombre) + '</button>').join('') : '') + '</div>';
-  }
-  const venc = vencidos();
-  if (venc.length || model.deficits.length) {
-    abajo = '<div class="alert-row">' +
-      (venc.length ? '<button class="apill warn" data-act="openVencidos">⏰ ' + venc.length + ' vencido(s)</button>' : '') +
-      (model.deficits.length ? '<button class="apill danger" data-act="showDeficit">🚨 Ruptura de caja: ' + model.deficits.slice(0, 4).map(d => pd(d.fecha).getDate()).join(', ') + (model.deficits.length > 4 ? '…' : '') + '</button>' : '') +
-      '</div>' + abajo;
-  }
+    '<button class="icon-btn" data-act="openSearch" aria-label="Buscar">' + IC.search + '</button>' +
+    '<button class="pill ' + (fijosOk ? 'done' : 'accent') + '" data-act="openFijos">' + (fijosOk ? 'Fijos ✓' : 'Fijos') + '</button></div></header>';
+  S.filter = ''; // el calendario muestra siempre todas las cuentas corrientes (la moneda se elige en el Resumen)
   if (!semana) h += '<div class="cal-dow"><span>Dom</span><span>Lun</span><span>Mar</span><span>Mié</span><span>Jue</span><span>Vie</span><span>Sáb</span></div>';
   h += '</div>';
 
@@ -847,7 +840,10 @@ function viewCalendario() {
         if (x.neg) cls += ' neg';
         if (x.i === 0 || x.i === 6) cls += ' wkend';
         if (x.moves.some(m => m.revisar)) cls += ' rev';
-        const dots = x.moves.slice(0, 6).map(m => '<i class="' + movClass(m) + '"></i>').join('') + (x.moves.length > 6 ? '<em>+' + (x.moves.length - 6) + '</em>' : '');
+        // Una sola marca por dia: naranja si hay algo vencido, azul si hay movimientos reales, gris si solo proyectados.
+        const tt = x.todos, t0 = today();
+        const marca = !tt.length ? '' : tt.some(m => m.estado === 'Proyectado' && m.fecha < t0) ? 'venc' : tt.some(m => m.estado === 'Real') ? 'real' : 'proy';
+        const dots = marca ? '<i class="mk ' + marca + '"></i>' : '';
         cells += '<div class="' + cls + '" data-act="day" data-d="' + x.d + '"' + (wk.locked ? '' : ' data-drop="' + x.d + '"') + '>' +
           '<span class="dn">' + x.dd.getDate() + '</span>' +
           '<div class="dots">' + dots + '</div><div class="chips">' + x.moves.map(m => chipHtml(m, wk.locked)).join('') + '</div>' +
@@ -857,21 +853,11 @@ function viewCalendario() {
       g += '<div class="wk' + (wk.locked ? ' locked' : '') + '" data-wk="' + wk.start + '">' + wkBar(wk) + '<div class="wk-days">' + cells + '</div></div>';
     });
     h += g + '</div>';
-    h += '<p class="pinch-hint muted small center">Desliza a los lados para cambiar de mes · pellizca una semana para verla en detalle · desde el borde, cambias de pestaña.</p>';
+
   }
 
-  // ---- Al fondo: resumen y leyenda
-  const ms = monthStats(md, inFlow);
-  h += '<div class="cal-bottom">' + abajo +
-    '<div class="cal-tools"><div class="seg sm view-seg"><button class="' + (semana ? '' : 'on') + '" data-act="calView" data-v="month">Mes</button><button class="' + (semana ? 'on' : '') + '" data-act="calView" data-v="week">Semana</button></div>' +
-    '<button class="pill ' + (fijosOk ? 'done' : 'accent') + '" data-act="openFijos">' + (fijosOk ? 'Fijos ✓' : 'Fijos') + '</button></div>' +
-    '<button class="btn wide sum-btn" data-act="openResumen">' + IC.chart + ' Resumen de ' + esc(monthLabel(md)) + '</button></div>';
-  h += '<div class="legend">' +
-    '<span><i class="lg real"></i>Real + <b class="pos">' + compact(ms.leg.rp) + '</b></span>' +
-    '<span><i class="lg realneg"></i>Real − <b class="neg">' + compact(ms.leg.rn) + '</b></span>' +
-    '<span><i class="lg proy"></i>Proy + <b>' + compact(ms.leg.pp) + '</b></span>' +
-    '<span><i class="lg proy dim"></i>Proy − <b>' + compact(ms.leg.pn) + '</b></span>' +
-    '<span><i class="lg venc"></i>Vencido <b class="' + (ms.leg.v >= 0 ? 'pos' : 'neg') + '">' + compact(ms.leg.v) + '</b></span></div>';
+  // ---- Al fondo: solo el resumen del mes
+  h += '<button class="btn wide sum-btn" data-act="openResumen">' + IC.chart + ' Resumen de ' + esc(monthLabel(md)) + '</button>';
   return h;
 }
 function chipHtml(m, locked) {

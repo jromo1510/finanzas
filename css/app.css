@@ -626,3 +626,10 @@ textarea.inp { resize: vertical; font-size: 15px; margin: 6px 0; }
 .map-row:last-child { border-bottom: 0; }
 .map-row select { width: 58%; flex: none; min-height: 38px; }
 .map-row.recibe span { color: var(--muted); font-size: 13px; }
+/* Calendario: una sola marca por dia */
+.dots i.mk { width: 7px; height: 7px; border-radius: 50%; box-shadow: none; }
+.dots i.mk.real { background: var(--blue); }
+.dots i.mk.proy { background: var(--gray); }
+.dots i.mk.venc { background: var(--orange); }
+.cal-top.slim .month-title { font-size: clamp(20px, 6.2vw, 26px) !important; }
+.cal-top.slim .cal-actions { flex: none; }
