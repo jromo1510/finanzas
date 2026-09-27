@@ -6,7 +6,7 @@
 'use strict';
 
 const CFG = Object.assign({ CURRENCY: 'S/', LOCALE: 'es-PE', SYNC_INTERVAL_MS: 15000, APP_NAME: 'Finanzas', APP_VERSION: '1.0.0' }, window.APP_CONFIG || {});
-CFG.APP_VERSION = '2.1.0'; // la version la marca este archivo, no config.js
+CFG.APP_VERSION = '2.2.0'; // la version la marca este archivo, no config.js
 const CAT_TRANSF = 'TRANSF. CUENTAS';
 const CAT_SALDO_INI = 'SALDO INICIAL';
 const CAT_PROTEGIDAS = [CAT_SALDO_INI, CAT_TRANSF];
@@ -150,6 +150,7 @@ function applyMeta(m) {
   if (m.saldos) S.saldos = m.saldos;
   if (m.presupuestos) S.presup = m.presupuestos;
   if (m.catIconos) S.catIconos = m.catIconos;
+  if (m.correos) S.correos = m.correos;
   if (m.serverToday) S.serverToday = m.serverToday;
   if (typeof m.version === 'number') S.version = m.version;
   if (m.user) { S.user = Object.assign({}, S.user, m.user); store.set('user', S.user); }
@@ -586,7 +587,8 @@ function viewInicio() {
   const tarjetas = S.cuentas.filter(c => c.tipo === 'Tarjeta' && c.activa);
   if (tarjetas.length) h += '<section class="card"><div class="card-head"><h2>Tarjetas de crédito</h2></div>' + tarjetas.map(cardSummaryRow).join('') + '</section>';
 
-  // Alertas: proyectados vencidos + ruptura de caja del mes actual (soles)
+  // Alertas: correos del banco por completar, proyectados vencidos y ruptura de caja (soles)
+  h += correosAlertHtml();
   const venc = vencidos();
   if (venc.length) {
     h += '<button class="alert warn" data-act="openVencidos"><span class="al-ico">⏰</span><span><b>' + venc.length + ' proyectado(s) vencido(s)</b><br><small>Fecha pasada y aún sin ejecutar. Toca para revisar.</small></span></button>';
@@ -848,6 +850,7 @@ function viewCalendario() {
         if (x.today) cls += ' today';
         if (x.neg) cls += ' neg';
         if (x.i === 0 || x.i === 6) cls += ' wkend';
+        if (x.moves.some(m => m.revisar)) cls += ' rev';
         const dots = x.moves.slice(0, 6).map(m => '<i class="' + movClass(m) + '"></i>').join('') + (x.moves.length > 6 ? '<em>+' + (x.moves.length - 6) + '</em>' : '');
         cells += '<div class="' + cls + '" data-act="day" data-d="' + x.d + '"' + (wk.locked ? '' : ' data-drop="' + x.d + '"') + '>' +
           '<span class="dn">' + x.dd.getDate() + '</span>' +
@@ -858,7 +861,7 @@ function viewCalendario() {
       g += '<div class="wk' + (wk.locked ? ' locked' : '') + '" data-wk="' + wk.start + '">' + wkBar(wk) + '<div class="wk-days">' + cells + '</div></div>';
     });
     h += g + '</div>';
-    h += '<p class="pinch-hint muted small center">Pellizca hacia afuera sobre una semana para verla en detalle.</p>';
+    h += '<p class="pinch-hint muted small center">Desliza a los lados para cambiar de mes · pellizca una semana para verla en detalle · desde el borde, cambias de pestaña.</p>';
   }
 
   // ---- Al fondo: resumen y leyenda
@@ -953,7 +956,7 @@ function movRow(m, o) {
     (swipe ? '<div class="sw-bg"><span class="sw-ok">' + IC.check + ' Ejecutar</span><span class="sw-del">Eliminar ' + IC.x + '</span></div>' : '') +
     '<div class="mv ' + movClass(m) + (sel ? ' sel' : '') + '" data-act="' + (S.selMode ? 'toggleSel' : 'editMov') + '" data-id="' + m.id + '" data-lp="' + m.id + '">' +
     '<span class="mv-bar"></span><span class="mv-ico">' + catIcon(m.categoria) + '</span>' +
-    '<div class="mv-main"><div class="mv-t">' + esc(title) + (locked ? ' <span class="tag">🔒</span>' : '') + '</div>' +
+    '<div class="mv-main"><div class="mv-t">' + esc(title) + (locked ? ' <span class="tag">🔒</span>' : '') + (m.revisar ? ' <span class="tag rev">🔔 Por completar</span>' : '') + '</div>' +
       '<div class="mv-s">' + (m.adjunto ? '📎 ' : '') + (o.date ? esc(shortDate(m.fecha)) + ' · ' : '') + '<span class="dot" style="--c:' + ctaColor(m.cuentaId) + '"></span>' + esc(ctaName(m.cuentaId)) +
       (meta ? ' · ' + esc((meta.icono || '🎯') + ' ' + meta.nombre) : '') + (m.detalle && m.categoria !== CAT_TRANSF ? ' · ' + esc(m.detalle) : '') + '</div></div>' +
     '<div class="mv-r"><div class="mv-amt ' + (m.monto >= 0 ? 'pos' : 'neg') + '">' + moneyPlus(m.monto, cur) + '</div><div class="mv-est">' + est + (o.bal != null ? ' · ' + money(o.bal, cur) : '') + '</div></div>' +
@@ -1026,6 +1029,7 @@ function viewMas() {
       item('openPresup', '🎯', 'Presupuestos', nPres ? nPres + ' categoría(s) con tope mensual' : 'Pon topes mensuales por categoría') +
       item('openFijos', '📌', 'Gastos fijos', 'Plantilla mensual') +
       item('openCuadre', '⚖️', 'Cuadre con el banco', 'Compara con el saldo real') +
+      item('openCorreos', '📬', 'Correo del banco (Outlook)', S.correos && S.correos.conectado ? 'Conectado' : 'Registra solos tus consumos', (porCompletar().length + bandeja().length) || '') +
       item('openVencidos', '⏰', 'Proyectados vencidos', '', venc || '') +
       item('openSearch', '🔍', 'Buscar movimientos', '') +
     '</div><div class="menu">' +
@@ -1132,6 +1136,7 @@ function openMovForm(p) {
       const f = sh.state.F;
       let h = '<form data-form="mov" class="movform" data-modo="' + f.modo + '">';
       if (locked) h += '<div class="banner lock">' + IC.lock + ' Semana cerrada: este movimiento es de solo lectura.</div>';
+      if (m && m.revisar) h += '<div class="banner info">🔔 Llegó de tu correo del banco. Revisa la categoría y ponle un detalle; al guardar queda completo.</div>';
       if (!m) {
         h += '<div class="seg big">' + [['gasto', 'Gasto'], ['ingreso', 'Ingreso'], ['transfer', 'Transferencia']].map(x => '<button type="button" class="' + (f.modo === x[0] ? 'on ' + x[0] : '') + '" data-act="movModo" data-v="' + x[0] + '">' + x[1] + '</button>').join('') + '</div>';
       } else if (!m.enlace) {
@@ -2105,7 +2110,12 @@ function setCalView(v, weekStart) {
       return;
     }
     if (e.touches.length !== 1 || blocked(e.target)) { sw = null; return; }
-    sw = { x0: e.touches[0].clientX, y0: e.touches[0].clientY, t0: Date.now(), dx: 0, axis: null };
+    const x0 = e.touches[0].clientX;
+    // En Calendario, deslizar sobre la grilla cambia de mes (o de semana). Desde el borde de la
+    // pantalla, o sobre la parte fija de arriba, se sigue cambiando de pestaña.
+    const borde = x0 < 24 || x0 > window.innerWidth - 24;
+    const zona = S.tab === 'calendario' && !borde && e.target.closest('.zoomable');
+    sw = { x0, y0: e.touches[0].clientY, t0: Date.now(), dx: 0, axis: null, mode: zona ? 'month' : 'tab', el: zona || null };
   }, { passive: true });
 
   document.addEventListener('touchmove', e => {
@@ -2124,6 +2134,13 @@ function setCalView(v, weekStart) {
     }
     if (sw.axis !== 'x') return;
     e.preventDefault();
+    if (sw.mode === 'month') {
+      sw.dx = dx;
+      sw.el.style.transition = 'none';
+      sw.el.style.transform = 'translateX(' + dx + 'px)';
+      sw.el.style.opacity = String(1 - Math.min(0.5, Math.abs(dx) / 600));
+      return;
+    }
     const i = TABS.indexOf(S.tab);
     const borde = (dx > 0 && i === 0) || (dx < 0 && i === TABS.length - 1);
     sw.dx = borde ? dx * 0.25 : dx;
@@ -2151,8 +2168,34 @@ function setCalView(v, weekStart) {
     if (!sw) return;
     const s = sw; sw = null;
     if (s.axis !== 'x') return;
-    const i = TABS.indexOf(S.tab), next = s.dx < 0 ? i + 1 : i - 1;
     const rapido = Math.abs(s.dx) / Math.max(1, Date.now() - s.t0) > 0.5;
+    if (s.mode === 'month') {
+      const el = s.el;
+      if (e.type === 'touchend' && (Math.abs(s.dx) > 60 || (rapido && Math.abs(s.dx) > 30))) {
+        const dir = s.dx < 0 ? -1 : 1; // izquierda = mes siguiente
+        el.style.transition = 'transform .15s ease-in, opacity .15s';
+        el.style.transform = 'translateX(' + (dir * window.innerWidth) + 'px)';
+        el.style.opacity = '0';
+        haptic();
+        setTimeout(() => {
+          ACT.month({ dataset: { d: -dir } });
+          const n = $('.zoomable');
+          if (!n) return;
+          n.style.transition = 'none';
+          n.style.transform = 'translateX(' + (-dir * window.innerWidth * 0.4) + 'px)';
+          n.style.opacity = '0';
+          requestAnimationFrame(() => requestAnimationFrame(() => {
+            n.style.transition = 'transform .22s ease-out, opacity .22s';
+            n.style.transform = ''; n.style.opacity = '';
+          }));
+        }, 150);
+      } else {
+        el.style.transition = 'transform .2s ease-out, opacity .2s';
+        el.style.transform = ''; el.style.opacity = '';
+      }
+      return;
+    }
+    const i = TABS.indexOf(S.tab), next = s.dx < 0 ? i + 1 : i - 1;
     if (e.type === 'touchend' && (Math.abs(s.dx) > 70 || (rapido && Math.abs(s.dx) > 30)) && next >= 0 && next < TABS.length) {
       const v = view(), dir = s.dx < 0 ? -1 : 1;
       v.style.transition = 'transform .16s ease-in, opacity .16s';
@@ -2695,6 +2738,97 @@ Object.assign(ACT, {
   movMonTj: el => { const sh = topSheet(); readMovForm(sh); sh.state.F.monedaTarjeta = el.dataset.v; sh.render(); },
   ctaPagoSel: () => {}
 });
+
+/* ============================ CORREO DEL BANCO (OUTLOOK) ============================ */
+// Los movimientos que llegan del correo quedan con revisar=true ("Por completar") hasta que los guardas.
+const porCompletar = () => S.movs.filter(m => m.revisar).sort((a, b) => a.fecha < b.fecha ? 1 : -1);
+const bandeja = () => ((S.correos && S.correos.pend) || []);
+function correosAlertHtml() {
+  const n = porCompletar().length, b = bandeja().length;
+  if (!n && !b) return '';
+  return '<button class="alert info" data-act="openCorreos"><span class="al-ico">🔔</span><span><b>' +
+    (n ? n + ' movimiento(s) del banco por completar' : '') + (n && b ? ' · ' : '') + (b ? b + ' en la bandeja' : '') + '</b><br><small>' +
+    (n ? 'Llegaron de tu correo. Revisa la categoría y ponle detalle.' : 'Elige a qué cuenta corresponden.') + '</small></span></button>';
+}
+async function cargarEstadoCorreo(sh) {
+  try { S.correoEstado = await api('outlookStatus'); } catch (e) { if (!e.auth) S.correoEstado = { error: e.message }; }
+  if (sh && sheets.includes(sh)) sh.render();
+}
+function openCorreos() {
+  const sh = openSheet({
+    kind: 'correos', live: true, tall: true, title: 'Correo del banco',
+    render: () => {
+      const st = S.correoEstado;
+      let h = '';
+      if (!st) h += '<div class="empty small"><div class="spinner"></div></div>';
+      else if (st.error && !st.conectado && st.configurado == null) h += '<div class="banner warn">' + esc(st.error) + '</div>';
+      else if (!st.configurado) h += '<div class="banner warn">Falta un paso en el servidor: registrar la app en Microsoft y ejecutar <b>configurarOutlook()</b> (ver la guía).</div>';
+      else if (!st.conectado) {
+        h += '<div class="card flat center"><div class="onb-emoji">📬</div><p>Conecta tu <b>Outlook</b> y los consumos y transferencias que te avisa el banco por correo se registrarán solos en el calendario, para que solo les pongas el detalle.</p>' +
+          '<button class="btn primary big" data-act="outlookConectar">Conectar Outlook</button>' +
+          '<p class="muted small">Permiso de solo lectura. La app solo abre los correos de los bancos; el resto ni se lee. Puedes desconectarlo cuando quieras.</p></div>';
+      } else {
+        h += '<div class="banner ok">✅ Conectado: <b>' + esc(st.email) + '</b>' + (st.ultimo ? ' · revisado ' + esc(String(st.ultimo).slice(11, 16)) : '') + '</div>';
+        if (st.error) h += '<div class="banner warn">Último intento: ' + esc(st.error) + '</div>';
+        if (!st.trigger) h += '<div class="banner warn">La revisión automática no está activa: ejecuta <b>installCorreoTrigger()</b> en Apps Script. Mientras, usa "Revisar ahora".</div>';
+        h += '<div class="btn-row"><button class="btn" data-act="correoSync">Revisar ahora</button><button class="btn ghost" data-act="outlookDesconectar">Desconectar</button></div>';
+      }
+      const pend = porCompletar();
+      if (pend.length) h += '<h4 class="sec">Por completar (' + pend.length + ')</h4><p class="muted small">Toca cada uno para revisar la categoría y el detalle. Al guardar queda completo y la app aprende la categoría de ese comercio.</p>' +
+        '<div class="list">' + pend.slice(0, 60).map(m => movRow(m, { date: true })).join('') + '</div>' +
+        '<button class="btn ghost wide" data-act="correoTodosOk">Marcar todos como revisados</button>';
+      const b = bandeja();
+      if (b.length) {
+        const opts = cuentaOpts('', 'active');
+        h += '<h4 class="sec">Bandeja (' + b.length + ')</h4><p class="muted small">Correos del banco que no pude asignar a una cuenta (no reconocí los 4 dígitos, o no encontré el monto).</p>' +
+          b.map(c => '<div class="card flat bandeja" data-msg="' + esc(c.id) + '"><div class="kv"><span><b>' + esc(c.comercio || c.asunto) + '</b><br><small>' + esc(c.fecha) + ' · ' + esc(c.from) + (c.ult4 ? ' · ****' + esc(c.ult4) : '') + '</small></span>' +
+            '<b class="' + (c.tipo === 'Ingreso' ? 'pos' : 'neg') + '">' + (c.monto > 0 ? (c.tipo === 'Ingreso' ? '+' : '-') + money(c.monto, c.moneda) : '¿monto?') + '</b></div>' +
+            (c.monto > 0 ? '<label class="fld"><span>¿De qué cuenta o tarjeta es?</span><select data-cta>' + opts + '</select></label>' +
+              (c.ult4 ? '<label class="chk"><input type="checkbox" data-rec checked> Recordar: todo lo que termine en ' + esc(c.ult4) + ' es de esta cuenta</label>' : '') : '<p class="muted small">No encontré el monto en este correo. Regístralo a mano si corresponde.</p>') +
+            '<div class="btn-row tight">' + (c.monto > 0 ? '<button class="btn sm primary" data-act="correoRegistrar" data-id="' + esc(c.id) + '">Registrar</button>' : '') +
+            '<button class="btn sm ghost" data-act="correoIgnorar" data-id="' + esc(c.id) + '">Ignorar</button></div></div>').join('');
+      }
+      if (st && st.conectado) h += '<details class="cats"><summary>Remitentes de bancos que se leen</summary><p class="muted small">Una por línea (parte del correo del remitente, ej. <i>bcp.com.pe</i>). Solo se abren correos de estos remitentes.</p>' +
+        '<textarea class="inp" rows="6" data-rem>' + esc((st.remitentes || []).join('\n')) + '</textarea><button class="btn sm wide" data-act="correoRemitentes">Guardar remitentes</button></details>';
+      return h;
+    }
+  });
+  cargarEstadoCorreo(sh);
+}
+Object.assign(ACT, {
+  openCorreos: () => openCorreos(),
+  outlookConectar: () => {
+    // La ventana se abre en el mismo toque (si no, Safari la bloquea) y luego se le pone la direccion.
+    const w = window.open('', '_blank');
+    api('outlookAuthUrl', location.href.split('#')[0]).then(url => { if (w) w.location.href = url; else location.href = url; })
+      .catch(e => { if (w) w.close(); if (!e.auth) toast(e.message, 'error'); });
+    toast('Inicia sesión en Microsoft y acepta el permiso. Luego vuelve a esta app.', 'info');
+  },
+  outlookDesconectar: async () => {
+    if (!(await ask('Desconectar Outlook', 'Dejarán de registrarse los movimientos de tu correo. Lo ya registrado se queda.', 'Desconectar', true))) return;
+    try { S.correoEstado = await api('outlookDisconnect'); refreshSheets(); toast('Outlook desconectado.', 'ok'); } catch (e) { if (!e.auth) toast(e.message, 'error'); }
+  },
+  correoSync: async () => {
+    toast('Revisando tu correo...', 'info');
+    try { await write('syncCorreosAhora', [], {}); await loadData(); await cargarEstadoCorreo(findSheet('correos')); toast('Listo.', 'ok'); } catch (e) {}
+  },
+  correoRegistrar: el => {
+    const box = el.closest('[data-msg]'), cuentaId = $('[data-cta]', box).value, rec = $('[data-rec]', box);
+    if (!cuentaId) return toast('Elige la cuenta.', 'error');
+    quiet(write('registrarCorreo', [el.dataset.id, cuentaId, !!(rec && rec.checked)], { ok: 'Registrado en ' + ctaName(cuentaId) + '.' }));
+  },
+  correoIgnorar: el => quiet(write('ignorarCorreo', [el.dataset.id], { ok: 'Correo ignorado.' })),
+  correoTodosOk: async () => {
+    const ids = porCompletar().map(m => m.id);
+    if (!ids.length || !(await ask('Marcar como revisados', 'Los ' + ids.length + ' movimientos quedarán con la categoría que tienen ahora.', 'Marcar'))) return;
+    quiet(write('marcarRevisado', [ids], { ok: 'Listo.' }));
+  },
+  correoRemitentes: async el => {
+    const list = $('[data-rem]', el.closest('details')).value.split(/\n|,/).map(s => s.trim()).filter(Boolean);
+    try { S.correoEstado = await api('setRemitentes', list); refreshSheets(); toast('Remitentes guardados.', 'ok'); } catch (e) { if (!e.auth) toast(e.message, 'error'); }
+  }
+});
+document.addEventListener('visibilitychange', () => { if (!document.hidden && findSheet('correos')) cargarEstadoCorreo(findSheet('correos')); });
 
 /* ============================ CARGA / SINCRONIZACION ============================ */
 async function loadData(manual) {
