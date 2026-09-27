@@ -599,3 +599,23 @@ body.locked #app { filter: blur(18px); }
 .tc-debt small { color: var(--muted); font-weight: 600; }
 .tc-sub { margin-top: 6px; }
 .tc-block { background: var(--card2); border-radius: 14px; padding: 4px 12px; margin: 10px 0; }
+
+/* ===== Correo del banco ===== */
+.alert.info { background: color-mix(in srgb, var(--blue) 12%, transparent); }
+.alert.info b { color: var(--blue); }
+.banner.info { background: color-mix(in srgb, var(--blue) 12%, transparent); }
+.tag.rev { background: color-mix(in srgb, var(--blue) 15%, transparent); color: var(--blue); }
+.day.rev .dn { box-shadow: 0 0 0 2px var(--blue); }
+.bandeja { padding: 10px 12px; }
+.bandeja .fld { margin: 8px 0 4px; }
+.chk { display: flex; gap: 8px; align-items: center; font-size: 13px; color: var(--muted); margin: 6px 0; }
+.chk input { width: 18px; height: 18px; }
+textarea.inp { resize: vertical; font-size: 15px; margin: 6px 0; }
+
+/* Calendario: barra superior minima */
+.cal-top.slim { flex-wrap: nowrap; }
+.cal-top.slim .month-title { text-align: left; min-width: 0; font-size: 26px !important; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.cal-top.slim .month-title.wk-title { font-size: 20px !important; }
+.cal-bottom { margin-top: 12px; }
+.cal-bottom .chips-row { padding: 0 0 8px; }
+.cal-tools { display: flex; justify-content: space-between; align-items: center; gap: 8px; margin: 4px 0 0; }

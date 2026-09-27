@@ -6,7 +6,7 @@
 'use strict';
 
 const CFG = Object.assign({ CURRENCY: 'S/', LOCALE: 'es-PE', SYNC_INTERVAL_MS: 15000, APP_NAME: 'Finanzas', APP_VERSION: '1.0.0' }, window.APP_CONFIG || {});
-CFG.APP_VERSION = '2.2.0'; // la version la marca este archivo, no config.js
+CFG.APP_VERSION = '2.2.1'; // la version la marca este archivo, no config.js
 const CAT_TRANSF = 'TRANSF. CUENTAS';
 const CAT_SALDO_INI = 'SALDO INICIAL';
 const CAT_PROTEGIDAS = [CAT_SALDO_INI, CAT_TRANSF];
@@ -801,29 +801,25 @@ function viewCalendario() {
   }
   S.deficits = model.deficits;
 
-  // ---- Parte fija: mes, acciones, filtro de cuentas, alertas y (en vista mes) los nombres de los dias
-  let h = '<div class="cal-sticky"><header class="top cal-top"><div class="month-nav">' +
-    '<button class="icon-btn" data-act="month" data-d="-1" data-mdrop="-1" aria-label="Anterior">' + IC.chevL + '</button>' +
+  // ---- Parte fija (minima): nombre del mes, Hoy y buscar; luego los nombres de los dias.
+  // Mes anterior/siguiente se cambia deslizando; lo demas (vista, moneda, cuentas, fijos, alertas) va al fondo.
+  let h = '<div class="cal-sticky"><header class="top cal-top slim">' +
     '<h1 class="month-title' + (semana ? ' wk-title' : '') + '">' + esc(semana ? weekLabel(S.week) : monthLabel(md)) + '</h1>' +
-    '<button class="icon-btn" data-act="month" data-d="1" data-mdrop="1" aria-label="Siguiente">' + IC.chevR + '</button></div>' +
-    '<div class="cal-actions">' +
-    '<button class="pill" data-act="thisMonth">Hoy</button>' +
-    '<div class="seg sm view-seg"><button class="' + (semana ? '' : 'on') + '" data-act="calView" data-v="month">Mes</button><button class="' + (semana ? 'on' : '') + '" data-act="calView" data-v="week">Semana</button></div>' +
-    '<button class="pill ' + (fijosOk ? 'done' : 'accent') + '" data-act="openFijos">' + (fijosOk ? 'Fijos ✓' : 'Fijos') + '</button>' +
-    '<button class="icon-btn" data-act="openResumen" aria-label="Resumen del mes">' + IC.chart + '</button>' +
+    '<div class="cal-actions"><button class="pill" data-act="thisMonth">Hoy</button>' +
     '<button class="icon-btn" data-act="openSearch" aria-label="Buscar">' + IC.search + '</button></div></header>';
+  let abajo = '';
   const corrCur = corr.filter(c => (c.moneda || 'PEN') === S.moneda);
   if (corrCur.length > 1 || hasUSD()) {
-    h += '<div class="chips-row">' + (hasUSD() ? '<div class="seg sm cur-seg"><button class="' + (S.moneda === 'PEN' ? 'on' : '') + '" data-act="moneda" data-v="PEN">S/</button><button class="' + (S.moneda === 'USD' ? 'on' : '') + '" data-act="moneda" data-v="USD">US$</button></div>' : '') +
+    abajo += '<div class="chips-row">' + (hasUSD() ? '<div class="seg sm cur-seg"><button class="' + (S.moneda === 'PEN' ? 'on' : '') + '" data-act="moneda" data-v="PEN">S/</button><button class="' + (S.moneda === 'USD' ? 'on' : '') + '" data-act="moneda" data-v="USD">US$</button></div>' : '') +
       (corrCur.length > 1 ? '<button class="fchip' + (!S.filter ? ' on' : '') + '" data-act="filter" data-id="">Todas</button>' +
       corrCur.map(c => '<button class="fchip' + (S.filter === c.id ? ' on' : '') + '" data-act="filter" data-id="' + c.id + '" style="--c:' + c.color + '"><i></i>' + esc(c.nombre) + '</button>').join('') : '') + '</div>';
   }
   const venc = vencidos();
   if (venc.length || model.deficits.length) {
-    h += '<div class="alert-row">' +
+    abajo = '<div class="alert-row">' +
       (venc.length ? '<button class="apill warn" data-act="openVencidos">⏰ ' + venc.length + ' vencido(s)</button>' : '') +
       (model.deficits.length ? '<button class="apill danger" data-act="showDeficit">🚨 Ruptura de caja: ' + model.deficits.slice(0, 4).map(d => pd(d.fecha).getDate()).join(', ') + (model.deficits.length > 4 ? '…' : '') + '</button>' : '') +
-      '</div>';
+      '</div>' + abajo;
   }
   if (!semana) h += '<div class="cal-dow"><span>Dom</span><span>Lun</span><span>Mar</span><span>Mié</span><span>Jue</span><span>Vie</span><span>Sáb</span></div>';
   h += '</div>';
@@ -866,7 +862,10 @@ function viewCalendario() {
 
   // ---- Al fondo: resumen y leyenda
   const ms = monthStats(md, inFlow);
-  h += '<button class="btn wide sum-btn" data-act="openResumen">' + IC.chart + ' Resumen de ' + esc(monthLabel(md)) + '</button>';
+  h += '<div class="cal-bottom">' + abajo +
+    '<div class="cal-tools"><div class="seg sm view-seg"><button class="' + (semana ? '' : 'on') + '" data-act="calView" data-v="month">Mes</button><button class="' + (semana ? 'on' : '') + '" data-act="calView" data-v="week">Semana</button></div>' +
+    '<button class="pill ' + (fijosOk ? 'done' : 'accent') + '" data-act="openFijos">' + (fijosOk ? 'Fijos ✓' : 'Fijos') + '</button></div>' +
+    '<button class="btn wide sum-btn" data-act="openResumen">' + IC.chart + ' Resumen de ' + esc(monthLabel(md)) + '</button></div>';
   h += '<div class="legend">' +
     '<span><i class="lg real"></i>Real + <b class="pos">' + compact(ms.leg.rp) + '</b></span>' +
     '<span><i class="lg realneg"></i>Real − <b class="neg">' + compact(ms.leg.rn) + '</b></span>' +
@@ -939,9 +938,9 @@ function movRow(m, o) {
   o = o || {};
   const locked = isMovLocked(m);
   const sel = S.sel.has(m.id);
-  const est = m.virtual ? (m.fecha < today() ? 'Pago vencido' : 'Pago calculado') : m.estado === 'Real' ? 'Real' : (m.fecha < today() ? 'Vencido' : 'Proyectado');
+  const est = m.revisar ? 'Por completar' : m.virtual ? (m.fecha < today() ? 'Pago vencido' : 'Pago calculado') : m.estado === 'Real' ? 'Real' : (m.fecha < today() ? 'Vencido' : 'Proyectado');
   const p = partnerOf(m);
-  const title = m.virtual ? 'Pago ' + ctaName(m.cardId) + (m.cur === 'USD' ? ' (US$)' : '') : m.categoria === CAT_TRANSF && p ? (m.monto < 0 ? 'A ' + ctaName(p.cuentaId) : 'Desde ' + ctaName(p.cuentaId)) : m.categoria;
+  const title = m.revisar && m.detalle ? m.detalle : m.virtual ? 'Pago ' + ctaName(m.cardId) + (m.cur === 'USD' ? ' (US$)' : '') : m.categoria === CAT_TRANSF && p ? (m.monto < 0 ? 'A ' + ctaName(p.cuentaId) : 'Desde ' + ctaName(p.cuentaId)) : m.categoria;
   const meta = m.metaId ? S.idx.meta.get(m.metaId) : null;
   let acts = '';
   if (S.selMode) acts = '<span class="ck' + (sel ? ' on' : '') + '">' + IC.check + '</span>';
@@ -956,7 +955,7 @@ function movRow(m, o) {
     (swipe ? '<div class="sw-bg"><span class="sw-ok">' + IC.check + ' Ejecutar</span><span class="sw-del">Eliminar ' + IC.x + '</span></div>' : '') +
     '<div class="mv ' + movClass(m) + (sel ? ' sel' : '') + '" data-act="' + (S.selMode ? 'toggleSel' : 'editMov') + '" data-id="' + m.id + '" data-lp="' + m.id + '">' +
     '<span class="mv-bar"></span><span class="mv-ico">' + catIcon(m.categoria) + '</span>' +
-    '<div class="mv-main"><div class="mv-t">' + esc(title) + (locked ? ' <span class="tag">🔒</span>' : '') + (m.revisar ? ' <span class="tag rev">🔔 Por completar</span>' : '') + '</div>' +
+    '<div class="mv-main"><div class="mv-t">' + esc(title) + (locked ? ' <span class="tag">🔒</span>' : '') + (m.revisar ? ' <span class="tag rev">🔔</span>' : '') + '</div>' +
       '<div class="mv-s">' + (m.adjunto ? '📎 ' : '') + (o.date ? esc(shortDate(m.fecha)) + ' · ' : '') + '<span class="dot" style="--c:' + ctaColor(m.cuentaId) + '"></span>' + esc(ctaName(m.cuentaId)) +
       (meta ? ' · ' + esc((meta.icono || '🎯') + ' ' + meta.nombre) : '') + (m.detalle && m.categoria !== CAT_TRANSF ? ' · ' + esc(m.detalle) : '') + '</div></div>' +
     '<div class="mv-r"><div class="mv-amt ' + (m.monto >= 0 ? 'pos' : 'neg') + '">' + moneyPlus(m.monto, cur) + '</div><div class="mv-est">' + est + (o.bal != null ? ' · ' + money(o.bal, cur) : '') + '</div></div>' +
@@ -1029,7 +1028,7 @@ function viewMas() {
       item('openPresup', '🎯', 'Presupuestos', nPres ? nPres + ' categoría(s) con tope mensual' : 'Pon topes mensuales por categoría') +
       item('openFijos', '📌', 'Gastos fijos', 'Plantilla mensual') +
       item('openCuadre', '⚖️', 'Cuadre con el banco', 'Compara con el saldo real') +
-      item('openCorreos', '📬', 'Correo del banco (Outlook)', S.correos && S.correos.conectado ? 'Conectado' : 'Registra solos tus consumos', (porCompletar().length + bandeja().length) || '') +
+      item('openCorreos', '📬', 'Correo del banco', S.correos && S.correos.conectado ? 'Activo' : 'Registra solos tus consumos', (porCompletar().length + bandeja().length) || '') +
       item('openVencidos', '⏰', 'Proyectados vencidos', '', venc || '') +
       item('openSearch', '🔍', 'Buscar movimientos', '') +
     '</div><div class="menu">' +
@@ -1136,7 +1135,7 @@ function openMovForm(p) {
       const f = sh.state.F;
       let h = '<form data-form="mov" class="movform" data-modo="' + f.modo + '">';
       if (locked) h += '<div class="banner lock">' + IC.lock + ' Semana cerrada: este movimiento es de solo lectura.</div>';
-      if (m && m.revisar) h += '<div class="banner info">🔔 Llegó de tu correo del banco. Revisa la categoría y ponle un detalle; al guardar queda completo.</div>';
+      if (m && m.revisar) h += '<div class="banner info"><span>🔔 Llegó de tu correo del banco. Revisa la categoría y ponle un detalle; al guardar queda completo.</span></div>';
       if (!m) {
         h += '<div class="seg big">' + [['gasto', 'Gasto'], ['ingreso', 'Ingreso'], ['transfer', 'Transferencia']].map(x => '<button type="button" class="' + (f.modo === x[0] ? 'on ' + x[0] : '') + '" data-act="movModo" data-v="' + x[0] + '">' + x[1] + '</button>').join('') + '</div>';
       } else if (!m.enlace) {
@@ -2751,7 +2750,7 @@ function correosAlertHtml() {
     (n ? 'Llegaron de tu correo. Revisa la categoría y ponle detalle.' : 'Elige a qué cuenta corresponden.') + '</small></span></button>';
 }
 async function cargarEstadoCorreo(sh) {
-  try { S.correoEstado = await api('outlookStatus'); } catch (e) { if (!e.auth) S.correoEstado = { error: e.message }; }
+  try { S.correoEstado = await api('correoStatus'); } catch (e) { if (!e.auth) S.correoEstado = { error: e.message }; }
   if (sh && sheets.includes(sh)) sh.render();
 }
 function openCorreos() {
@@ -2760,18 +2759,18 @@ function openCorreos() {
     render: () => {
       const st = S.correoEstado;
       let h = '';
+      const pasos = '<ol class="steps"><li>Abre <b>outlook.com</b> en el navegador (en la computadora es más fácil) → ⚙️ <b>Configuración</b> → <b>Correo</b> → <b>Reglas</b> → <b>+ Agregar nueva regla</b>.</li>' +
+        '<li>Nombre: <i>Bancos a Finanzas</i>. Condición: <b>La dirección del remitente incluye</b> → escribe el dominio de cada banco (ej. <i>bcp.com.pe</i>, <i>interbank.pe</i>, <i>bbva.pe</i>), uno por uno.</li>' +
+        '<li>Acción: <b>Redirigir a</b> (o "Reenviar a") → <b>' + esc((st && st.gmail) || 'tu Gmail del script') + '</b>. Guarda.</li>' +
+        '<li>Tu esposa hace lo mismo en su Outlook, reenviando al <b>mismo Gmail</b>.</li></ol>';
       if (!st) h += '<div class="empty small"><div class="spinner"></div></div>';
-      else if (st.error && !st.conectado && st.configurado == null) h += '<div class="banner warn">' + esc(st.error) + '</div>';
-      else if (!st.configurado) h += '<div class="banner warn">Falta un paso en el servidor: registrar la app en Microsoft y ejecutar <b>configurarOutlook()</b> (ver la guía).</div>';
-      else if (!st.conectado) {
-        h += '<div class="card flat center"><div class="onb-emoji">📬</div><p>Conecta tu <b>Outlook</b> y los consumos y transferencias que te avisa el banco por correo se registrarán solos en el calendario, para que solo les pongas el detalle.</p>' +
-          '<button class="btn primary big" data-act="outlookConectar">Conectar Outlook</button>' +
-          '<p class="muted small">Permiso de solo lectura. La app solo abre los correos de los bancos; el resto ni se lee. Puedes desconectarlo cuando quieras.</p></div>';
-      } else {
-        h += '<div class="banner ok">✅ Conectado: <b>' + esc(st.email) + '</b>' + (st.ultimo ? ' · revisado ' + esc(String(st.ultimo).slice(11, 16)) : '') + '</div>';
-        if (st.error) h += '<div class="banner warn">Último intento: ' + esc(st.error) + '</div>';
-        if (!st.trigger) h += '<div class="banner warn">La revisión automática no está activa: ejecuta <b>installCorreoTrigger()</b> en Apps Script. Mientras, usa "Revisar ahora".</div>';
-        h += '<div class="btn-row"><button class="btn" data-act="correoSync">Revisar ahora</button><button class="btn ghost" data-act="outlookDesconectar">Desconectar</button></div>';
+      else {
+        h += '<div class="banner ' + (st.trigger ? 'ok' : 'warn') + '"><span>' + (st.trigger
+          ? '📬 Los avisos del banco se leen desde <b>' + esc(st.gmail || 'tu Gmail') + '</b> cada 5 minutos' + (st.ultimo ? ' · última revisión ' + esc(String(st.ultimo).slice(11, 16)) : '') + '.'
+          : 'Falta activar la lectura de correos: en Apps Script ejecuta <b>configurarCorreo()</b> una vez.') + '</span></div>';
+        if (st.error) h += '<div class="banner warn"><span>Último intento: ' + esc(st.error) + '</span></div>';
+        h += '<div class="btn-row"><button class="btn" data-act="correoSync">Revisar ahora</button></div>';
+        h += '<details class="cats"' + (S.correos && S.correos.conectado ? '' : ' open') + '><summary>Cómo reenviar los avisos desde Outlook</summary>' + pasos + '<p class="muted small">Solo se leen los correos de los bancos de la lista de abajo; el resto de ese Gmail no se toca.</p></details>';
       }
       const pend = porCompletar();
       if (pend.length) h += '<h4 class="sec">Por completar (' + pend.length + ')</h4><p class="muted small">Toca cada uno para revisar la categoría y el detalle. Al guardar queda completo y la app aprende la categoría de ese comercio.</p>' +
@@ -2788,7 +2787,7 @@ function openCorreos() {
             '<div class="btn-row tight">' + (c.monto > 0 ? '<button class="btn sm primary" data-act="correoRegistrar" data-id="' + esc(c.id) + '">Registrar</button>' : '') +
             '<button class="btn sm ghost" data-act="correoIgnorar" data-id="' + esc(c.id) + '">Ignorar</button></div></div>').join('');
       }
-      if (st && st.conectado) h += '<details class="cats"><summary>Remitentes de bancos que se leen</summary><p class="muted small">Una por línea (parte del correo del remitente, ej. <i>bcp.com.pe</i>). Solo se abren correos de estos remitentes.</p>' +
+      if (st) h += '<details class="cats"><summary>Remitentes de bancos que se leen</summary><p class="muted small">Una por línea (parte del correo del remitente, ej. <i>bcp.com.pe</i>). Solo se abren correos de estos remitentes.</p>' +
         '<textarea class="inp" rows="6" data-rem>' + esc((st.remitentes || []).join('\n')) + '</textarea><button class="btn sm wide" data-act="correoRemitentes">Guardar remitentes</button></details>';
       return h;
     }
@@ -2797,17 +2796,6 @@ function openCorreos() {
 }
 Object.assign(ACT, {
   openCorreos: () => openCorreos(),
-  outlookConectar: () => {
-    // La ventana se abre en el mismo toque (si no, Safari la bloquea) y luego se le pone la direccion.
-    const w = window.open('', '_blank');
-    api('outlookAuthUrl', location.href.split('#')[0]).then(url => { if (w) w.location.href = url; else location.href = url; })
-      .catch(e => { if (w) w.close(); if (!e.auth) toast(e.message, 'error'); });
-    toast('Inicia sesión en Microsoft y acepta el permiso. Luego vuelve a esta app.', 'info');
-  },
-  outlookDesconectar: async () => {
-    if (!(await ask('Desconectar Outlook', 'Dejarán de registrarse los movimientos de tu correo. Lo ya registrado se queda.', 'Desconectar', true))) return;
-    try { S.correoEstado = await api('outlookDisconnect'); refreshSheets(); toast('Outlook desconectado.', 'ok'); } catch (e) { if (!e.auth) toast(e.message, 'error'); }
-  },
   correoSync: async () => {
     toast('Revisando tu correo...', 'info');
     try { await write('syncCorreosAhora', [], {}); await loadData(); await cargarEstadoCorreo(findSheet('correos')); toast('Listo.', 'ok'); } catch (e) {}
