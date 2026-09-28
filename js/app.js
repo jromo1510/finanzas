@@ -6,7 +6,7 @@
 'use strict';
 
 const CFG = Object.assign({ CURRENCY: 'S/', LOCALE: 'es-PE', SYNC_INTERVAL_MS: 15000, APP_NAME: 'Finanzas', APP_VERSION: '1.0.0' }, window.APP_CONFIG || {});
-CFG.APP_VERSION = '2.3.2'; // la version la marca este archivo, no config.js
+CFG.APP_VERSION = '3.0.0'; // la version la marca este archivo, no config.js
 const CAT_TRANSF = 'TRANSF. CUENTAS';
 const CAT_SALDO_INI = 'SALDO INICIAL';
 const CAT_PROTEGIDAS = [CAT_SALDO_INI, CAT_TRANSF];
@@ -220,8 +220,10 @@ function isMovLocked(m) {
   return !!(p && !lockExempt(p) && isLockedDate(p.fecha));
 }
 
-// "Flujo" = cuentas corrientes (como IBK/BCP en la intranet); el filtro del calendario lo acota a una.
-function inFlow(m) { return isCorr(m.cuentaId) && curOf(m.cuentaId) === S.moneda && (!S.filter || m.cuentaId === S.filter); }
+// "Flujo" del calendario = todas tus cuentas de la moneda elegida (corrientes y de ahorro). Las tarjetas
+// no: la compra no mueve la plata ese dia; lo que resta es el pago y cada cuota, en su fecha de pago.
+function inFlow(m) { return !isCard(m.cuentaId) && curOf(m.cuentaId) === S.moneda && (!S.filter || m.cuentaId === S.filter); }
+const flowPEN = m => !isCard(m.cuentaId) && curOf(m.cuentaId) === 'PEN';
 function balanceUpTo(dateStr, realOnly, pred) {
   pred = pred || inFlow;
   let b = 0;
@@ -507,7 +509,11 @@ function goTab(t) {
   store.set('tab', t);
   try { history.replaceState(history.state, '', location.pathname + location.search + '#' + t); } catch (e) {}
   renderView();
-  if (changed) window.scrollTo(0, 0);
+  if (changed) {
+    window.scrollTo(0, 0);
+    const v = $('#view');
+    if (v) { v.classList.remove('enter'); void v.offsetWidth; v.classList.add('enter'); }
+  }
 }
 function renderView() {
   const v = $('#view');
@@ -548,106 +554,95 @@ function eyeBtn() {
 function countNum(key, n, cur, cls) {
   return '<span class="' + (cls || '') + '" data-count="' + n + '" data-ck="' + key + '" data-cur="' + (cur || '') + '">' + money(n, cur) + '</span>';
 }
+// Inicio: lo importante primero (cuánto tienes, qué viene, cómo va el mes) y lo demás, corto.
 function viewInicio() {
   const nombre = (S.user && S.user.nombre) ? S.user.nombre.split(' ')[0] : '';
-  let h = topbar(saludo() + (nombre ? ', ' + esc(nombre) : ''), eyeBtn() + syncChip());
+  let h = '<header class="top home-top"><div class="top-row"><div class="hello"><span class="eyebrow">' + saludo() + '</span><h1>' + esc(nombre || 'Finanzas') + '</h1></div>' +
+    '<div class="top-right">' + eyeBtn() + syncChip() + '</div></div></header>';
   if (!S.loaded && !S.movs.length && !S.cuentas.length) return h + '<div class="empty"><div class="spinner"></div><p>Cargando tus datos...</p></div>';
   if (!S.cuentas.length) {
     return h + '<section class="card onboard"><div class="onb-emoji">👋</div><h2>Empecemos</h2>' +
-      '<p>Crea tus cuentas. Las <b>corrientes</b> (sueldo, gastos del día a día) forman tu flujo disponible; las de <b>ahorro</b> van aparte y pueden tener metas.</p>' +
+      '<p>Crea tus cuentas: las <b>corrientes</b> para el día a día y las de <b>ahorro</b>, que pueden tener metas. Todas suman en tu calendario.</p>' +
       '<button class="btn primary big" data-act="newCuenta" data-tipo="Corriente">Crear cuenta corriente</button>' +
       '<button class="btn big" data-act="newCuenta" data-tipo="Ahorro">Crear cuenta de ahorro</button></section>';
   }
   const t = today();
   const corr = activeCuentas('Corriente'), aho = activeCuentas('Ahorro');
+  const tarjetas = S.cuentas.filter(c => c.tipo === 'Tarjeta' && c.activa);
   const realDe = f => sum(S.movs.filter(m => m.estado === 'Real' && f(m)), m => m.monto);
-  const disp = realDe(corrPEN);
-  const finMes = dstr(new Date(pd(t).getFullYear(), pd(t).getMonth() + 1, 0));
-  const proyFin = balanceUpTo(finMes, false, corrPEN);
+  const corrPENr = realDe(m => isCorr(m.cuentaId) && curOf(m.cuentaId) === 'PEN');
   const ahorroPEN = realDe(m => isAhorro(m.cuentaId) && curOf(m.cuentaId) === 'PEN');
+  const total = corrPENr + ahorroPEN;
+  const finMes = dstr(new Date(pd(t).getFullYear(), pd(t).getMonth() + 1, 0));
+  const proyFin = balanceUpTo(finMes, false, flowPEN);
+  const deudaTj = sum(tarjetas, c => { const s = cardStatus(c, 'PEN'); return s ? Math.max(0, s.deuda) : 0; });
 
-  h += '<section class="hero"><div class="hero-lbl">Disponible en cuentas corrientes</div>' +
-    '<div class="hero-amt' + (disp < 0 ? ' neg' : '') + '">' + countNum('disp', disp, 'PEN') + '</div>' +
-    '<div class="hero-row"><span>Fin de mes (con proyectados)</span><b class="' + (proyFin < 0 ? 'neg' : '') + '">' + countNum('fin', proyFin, 'PEN') + '</b></div>' +
-    (aho.some(c => c.moneda !== 'USD') ? '<div class="hero-row"><span>Ahorrado</span><b>' + countNum('aho', ahorroPEN, 'PEN') + '</b></div>' : '');
+  // 1) Saldo
+  h += '<section class="balance"><span class="eyebrow">Saldo en tus cuentas</span>' +
+    '<div class="bal-amt' + (total < 0 ? ' neg' : '') + '">' + countNum('tot', total, 'PEN') + '</div>' +
+    '<button class="bal-sub" data-act="goCal">Al cierre del mes, con lo proyectado: <b class="' + (proyFin < 0 ? 'neg' : '') + '">' + countNum('fin', proyFin, 'PEN') + '</b>' + IC.chevR + '</button>' +
+    '<div class="kpis"><div><span>Corrientes</span><b>' + countNum('corr', corrPENr, 'PEN') + '</b></div>' +
+    '<div><span>Ahorro</span><b>' + countNum('aho', ahorroPEN, 'PEN') + '</b></div>' +
+    (tarjetas.length ? '<div><span>Deuda tarjetas</span><b class="' + (deudaTj > 0.005 ? 'neg' : '') + '">' + countNum('tj', deudaTj, 'PEN') + '</b></div>' : '') + '</div>';
   if (hasUSD()) {
-    const dispU = realDe(m => isCorr(m.cuentaId) && curOf(m.cuentaId) === 'USD');
-    const ahoU = realDe(m => isAhorro(m.cuentaId) && curOf(m.cuentaId) === 'USD');
-    h += '<div class="hero-row usd"><span>En dólares</span><b>' + countNum('dispU', dispU, 'USD') + (Math.abs(ahoU) > 0.004 ? ' <small>+ ' + money(ahoU, 'USD') + ' ahorrado</small>' : '') + '</b></div>';
+    const u = realDe(m => !isCard(m.cuentaId) && curOf(m.cuentaId) === 'USD');
+    h += '<div class="bal-usd">En dólares <b>' + countNum('usd', u, 'USD') + '</b></div>';
   }
   h += '</section>';
 
-  h += '<div class="acc-scroll">' + corr.concat(aho).filter(c => c.tipo !== 'Tarjeta').map(c => {
+  // 2) Avisos (solo si hay)
+  const avisos = [];
+  const nRev = porCompletar().length + bandeja().length;
+  if (nRev) avisos.push('<button class="notice info" data-act="openCorreos"><i></i><span><b>' + nRev + ' del correo del banco</b> por completar</span>' + IC.chevR + '</button>');
+  const venc = vencidos();
+  if (venc.length) avisos.push('<button class="notice warn" data-act="openVencidos"><i></i><span><b>' + venc.length + ' proyectado' + (venc.length > 1 ? 's' : '') + ' vencido' + (venc.length > 1 ? 's' : '') + '</b> sin ejecutar</span>' + IC.chevR + '</button>');
+  const deficit = deficitDays(firstOfMonth(pd(t)), flowPEN).filter(d => d.fecha >= t);
+  if (deficit.length) avisos.push('<button class="notice danger" data-act="goCal"><i></i><span><b>Saldo negativo el ' + esc(dayLabel(deficit[0].fecha, { day: 'numeric', month: 'short' })) + '</b> · llegaría a ' + money(deficit[0].saldo, 'PEN') + '</span>' + IC.chevR + '</button>');
+  if (avisos.length) h += '<div class="notices">' + avisos.join('') + '</div>';
+
+  // 3) Lo que viene (7 dias)
+  const lim = addDays(t, 7);
+  const prox = M().filter(m => m.estado === 'Proyectado' && m.fecha >= t && m.fecha <= lim && !isCard(m.cuentaId) && !(m.enlace && m.tipo === 'Ingreso' && partnerOf(m)))
+    .sort((a, b) => a.fecha < b.fecha ? -1 : a.fecha > b.fecha ? 1 : sortByOrden(a, b));
+  const proxNet = sum(prox, m => m.monto);
+  h += '<section class="card"><div class="card-head"><h2>Próximos 7 días</h2>' + (prox.length ? '<span class="head-num ' + (proxNet >= 0 ? 'pos' : 'neg') + '">' + moneyPlus(proxNet, 'PEN') + '</span>' : '') + '</div>' +
+    (prox.length ? '<div class="list">' + prox.slice(0, 5).map(m => movRow(m, { date: true, noActs: true })).join('') + '</div>' +
+      (prox.length > 5 ? '<button class="link more" data-act="goCal">Ver ' + (prox.length - 5) + ' más en el calendario</button>' : '')
+      : '<p class="muted small">Nada proyectado para esta semana.</p>') + '</section>';
+
+  // 4) Este mes
+  const ms = monthStats(firstOfMonth(pd(t)), flowPEN, 'PEN');
+  const o = ms.total, gasto = o.sumEgr, ingreso = o.sumIng, neto = ingreso - gasto - o.aho - o.cam;
+  const mx = Math.max(ingreso, gasto, 1);
+  h += '<section class="card"><div class="card-head"><h2>' + esc(monthLabel(pd(t)).split(' ')[0]) + '</h2><button class="link" data-act="goCalSum">Resumen</button></div>' +
+    '<div class="flow2"><div><span>Ingresos</span><b class="pos">' + money(ingreso, 'PEN') + '</b><i style="--w:' + (ingreso / mx * 100).toFixed(1) + '%;--c:var(--green)"></i></div>' +
+    '<div><span>Gastos</span><b>' + money(gasto, 'PEN') + '</b><i style="--w:' + (gasto / mx * 100).toFixed(1) + '%;--c:var(--red)"></i></div></div>' +
+    '<div class="kv big"><span>Neto del mes</span><b class="' + (neto >= 0 ? 'pos' : 'neg') + '">' + moneyPlus(neto, 'PEN') + '</b></div>' +
+    (Math.abs(o.tc) > 0.004 ? '<p class="muted small">De los gastos, ' + money(o.tc, 'PEN') + ' fueron con tarjeta y se pagan después.</p>' : '') +
+    topCats(o.egr, o.sumEgr, 4) + '</section>';
+
+  // 5) Cuentas y tarjetas
+  h += '<div class="sec-row"><h4 class="sec">Cuentas</h4><button class="link" data-act="openCuentas">Ver todas</button></div>';
+  h += '<div class="acc-scroll">' + corr.concat(aho).map(c => {
     const b = ctaBalance(c.id, true);
     return '<button class="acc" data-act="openCuentaHist" data-id="' + c.id + '" style="--c:' + c.color + '">' +
-      '<span class="acc-tipo">' + (c.tipo === 'Ahorro' ? 'Ahorro' : 'Corriente') + (c.moneda === 'USD' ? ' · US$' : '') + '</span><span class="acc-name">' + esc(c.nombre) + '</span>' +
+      '<span class="acc-tipo"><i></i>' + (c.tipo === 'Ahorro' ? 'Ahorro' : 'Corriente') + (c.moneda === 'USD' ? ' · US$' : '') + '</span><span class="acc-name">' + esc(c.nombre) + '</span>' +
       '<span class="acc-bal' + (b < 0 ? ' neg' : '') + '">' + money(b, c.moneda) + '</span></button>';
-  }).join('') + '<button class="acc add" data-act="newCuenta">' + IC.plus + '<span>Cuenta</span></button></div>';
-
-  const tarjetas = S.cuentas.filter(c => c.tipo === 'Tarjeta' && c.activa);
+  }).join('') + '<button class="acc add" data-act="newCuenta">' + IC.plus + '<span>Nueva</span></button></div>';
   if (tarjetas.length) h += '<section class="card"><div class="card-head"><h2>Tarjetas de crédito</h2></div>' + tarjetas.map(cardSummaryRow).join('') + '</section>';
 
-  // Alertas: correos del banco por completar, proyectados vencidos y ruptura de caja (soles)
-  h += correosAlertHtml();
-  const venc = vencidos();
-  if (venc.length) {
-    h += '<button class="alert warn" data-act="openVencidos"><span class="al-ico">⏰</span><span><b>' + venc.length + ' proyectado(s) vencido(s)</b><br><small>Fecha pasada y aún sin ejecutar. Toca para revisar.</small></span></button>';
-  }
-  const deficit = deficitDays(firstOfMonth(pd(t)), corrPEN).filter(d => d.fecha >= t);
-  if (deficit.length) {
-    h += '<button class="alert danger" data-act="goCal"><span class="al-ico">🚨</span><span><b>Ruptura de caja el ' + esc(dayLabel(deficit[0].fecha, { day: 'numeric', month: 'long' })) + '</b><br><small>El saldo proyectado llegaría a ' + money(deficit[0].saldo, 'PEN') + '. Revisa el calendario.</small></span></button>';
-  }
-
-  // Este mes (soles): el ahorro va aparte, no como gasto
-  const ms = monthStats(firstOfMonth(pd(t)), corrPEN, 'PEN');
-  const o = ms.total, neto = o.sumIng - o.sumEgr - o.aho - o.cam;
-  h += '<section class="card"><div class="card-head"><h2>Este mes</h2><button class="link" data-act="goCalSum">Ver detalle</button></div>' +
-    '<div class="quad"><div><span>Ingresos</span><b class="pos">' + money(o.sumIng, 'PEN') + '</b></div><div><span>Gastos</span><b class="neg">' + money(o.sumEgr, 'PEN') + '</b></div>' +
-    '<div><span>Ahorrado 🐷</span><b class="blue">' + money(o.aho, 'PEN') + '</b></div>' +
-    '<div><span>Neto</span><b class="' + (neto >= 0 ? 'pos' : 'neg') + '">' + moneyPlus(neto, 'PEN') + '</b></div></div>' +
-    (Math.abs(o.cam) > 0.004 ? '<p class="muted small">💱 Incluye cambio de moneda: ' + moneyPlus(-o.cam, 'PEN') + '</p>' : '') +
-    (Math.abs(o.tc) > 0.004 ? '<p class="muted small">💳 De los gastos, ' + money(o.tc, 'PEN') + ' fueron con tarjeta' + (o.tar > 0.004 ? ' · pagos de tarjeta este mes: ' + money(o.tar, 'PEN') : '') + '</p>' : '') +
-    topCats(o.egr, o.sumEgr) + '</section>';
-
-  // Presupuestos del mes
-  h += presupCard(ms);
-
-  // Cuadre con el banco
-  if (corr.length) {
-    h += '<section class="card"><div class="card-head"><h2>Cuadre con el banco</h2><button class="link" data-act="openCuadre">Actualizar</button></div>';
-    const monedas = ['PEN'].concat(hasUSD() ? ['USD'] : []);
-    let alguno = false;
-    monedas.forEach(cur => {
-      const r = cuadre(cur);
-      if (!r.hayDatos) return;
-      alguno = true;
-      h += (monedas.length > 1 ? '<h4 class="sec">' + (cur === 'USD' ? 'Dólares' : 'Soles') + '</h4>' : '') +
-        '<div class="kv"><span>Suma en bancos</span><b>' + money(r.banco, cur) + '</b></div><div class="kv"><span>Según la app (semana actual, real)</span><b>' + money(r.app, cur) + '</b></div>' +
-        '<div class="kv big"><span>Diferencia</span><b class="' + (Math.abs(r.dif) < 0.01 ? 'pos' : r.dif > 0 ? 'blue' : 'neg') + '">' + (Math.abs(r.dif) < 0.01 ? 'Cuadrado ✓' : moneyPlus(r.dif, cur)) + '</b></div>';
-    });
-    if (!alguno) h += '<p class="muted small">Anota el saldo que ves en la app de tu banco y compara con lo registrado aquí.</p>';
-    h += '</section>';
-  }
-
-  // Metas
+  // 6) Presupuestos y metas (solo si existen)
+  const pr = presupRows(ms);
+  if (pr.length) h += '<section class="card"><div class="card-head"><h2>Presupuestos</h2><button class="link" data-act="openPresup">Editar</button></div>' + pr.slice(0, 4).map(presupBar).join('') + '</section>';
   const metas = S.metas.filter(m => m.estado !== 'Archivada' && cta(m.cuentaId));
-  if (metas.length) {
-    h += '<section class="card"><div class="card-head"><h2>Metas de ahorro</h2><button class="link" data-act="tab" data-tab="ahorro">Ver todas</button></div>' +
-      metas.slice(0, 3).map(metaMini).join('') + '</section>';
-  }
-
-  // Próximos 7 días
-  const lim = addDays(t, 7);
-  const prox = M().filter(m => m.estado === 'Proyectado' && m.fecha >= t && m.fecha <= lim && !(m.enlace && m.tipo === 'Ingreso' && partnerOf(m)))
-    .sort((a, b) => a.fecha < b.fecha ? -1 : a.fecha > b.fecha ? 1 : sortByOrden(a, b));
-  h += '<section class="card"><div class="card-head"><h2>Próximos 7 días</h2></div>' +
-    (prox.length ? '<div class="list">' + prox.slice(0, 12).map(m => movRow(m, { date: true })).join('') + '</div>' : '<p class="muted small">No hay movimientos proyectados para esta semana.</p>') + '</section>';
+  if (metas.length) h += '<section class="card"><div class="card-head"><h2>Metas de ahorro</h2><button class="link" data-act="tab" data-tab="ahorro">Ver todas</button></div>' + metas.slice(0, 3).map(metaMini).join('') + '</section>';
+  if (!pr.length) h += '<button class="card cta-card" data-act="openPresup"><span class="al-ico">🎯</span><span><b>Define presupuestos</b><br><small class="muted">Un tope mensual por categoría; te avisamos al llegar al 80%.</small></span></button>';
   return h;
 }
-function topCats(egr, total) {
-  const rows = Object.keys(egr).map(k => [k, egr[k]]).sort((a, b) => b[1] - a[1]).slice(0, 5);
+function topCats(egr, total, n) {
+  const rows = Object.keys(egr).map(k => [k, egr[k]]).sort((a, b) => b[1] - a[1]).slice(0, n || 5);
   if (!rows.length) return '';
-  return '<div class="bars">' + rows.map(r => '<div class="barrow"><span class="bl">' + catIcon(r[0]) + ' ' + esc(r[0]) + '</span><span class="bt"><i style="width:' + Math.max(3, (r[1] / (total || 1)) * 100).toFixed(1) + '%"></i></span><span class="bv">' + money(r[1], 'PEN') + '</span></div>').join('') + '</div>';
+  return '<div class="bars">' + rows.map(r => '<div class="barrow"><span class="bl">' + catIcon(r[0]) + ' ' + esc(r[0].charAt(0) + r[0].slice(1).toLowerCase()) + '</span><span class="bt"><i style="width:' + Math.max(3, (r[1] / (total || 1)) * 100).toFixed(1) + '%"></i></span><span class="bv">' + money(r[1], 'PEN') + '</span></div>').join('') + '</div>';
 }
 // Presupuesto: gasto del mes (real + proyectado) contra el tope de cada categoria (soles).
 function presupRows(ms) {
@@ -699,7 +694,7 @@ function deficitDays(monthDate, pred) {
 function monthStats(monthDate, pred, cur) {
   cur = cur || S.moneda;
   const mk = monthKey(monthDate), t = today();
-  const bucket = () => ({ ing: {}, egr: {}, sumIng: 0, sumEgr: 0, ini: {}, sumIni: 0, aho: 0, cam: 0, tc: 0, tar: 0 });
+  const bucket = () => ({ ing: {}, egr: {}, sumIng: 0, sumEgr: 0, ini: {}, sumIni: 0, aho: 0, ahoIn: 0, cam: 0, tc: 0, tar: 0 });
   const st = { total: bucket(), real: bucket(), proy: bucket(), leg: { rp: 0, rn: 0, pp: 0, pn: 0, v: 0 } };
   const add = (o, m) => {
     if (m.monto >= 0) { o.ing[m.categoria] = (o.ing[m.categoria] || 0) + m.monto; o.sumIng += m.monto; }
@@ -729,8 +724,10 @@ function monthStats(monthDate, pred, cur) {
     if (m.enlace) {
       const p = partnerOf(m);
       if (p && isCard(p.cuentaId)) { [st.total, st[k]].forEach(o => { o.tar -= m.monto; }); return; }
-      // Hacia/desde una cuenta de ahorro: es ahorro (o retiro de ahorro), no gasto ni ingreso.
-      if (p && isAhorro(p.cuentaId)) { [st.total, st[k]].forEach(o => { o.aho -= m.monto; }); return; }
+      // Hacia/desde una cuenta de ahorro: es ahorro (o retiro de ahorro), no gasto ni ingreso. Si el ahorro
+      // tambien esta en el flujo, la plata no sale de tus cuentas: se anota aparte (ahoIn) sin restar.
+      if (p && isAhorro(p.cuentaId) && !isAhorro(m.cuentaId)) { [st.total, st[k]].forEach(o => { if (pred(p)) o.ahoIn -= m.monto; else o.aho -= m.monto; }); return; }
+      if (isAhorro(m.cuentaId) && p && !isAhorro(p.cuentaId) && pred(p)) return; // el otro lado ya lo conto
       // Hacia/desde una cuenta corriente de otra moneda: es un cambio de moneda, tampoco es gasto.
       if (p && movCur(p) !== movCur(m)) { [st.total, st[k]].forEach(o => { o.cam -= m.monto; }); return; }
       if (isInternalFor(m, pred)) return; // entre dos cuentas del flujo: no es ingreso ni gasto
@@ -842,12 +839,13 @@ function viewCalendario() {
         if (x.moves.some(m => m.revisar)) cls += ' rev';
         // Una sola marca por dia: naranja si hay algo vencido, azul si hay movimientos reales, gris si solo proyectados.
         const tt = x.todos, t0 = today();
-        const marca = !tt.length ? '' : tt.some(m => m.estado === 'Proyectado' && m.fecha < t0) ? 'venc' : tt.some(m => m.estado === 'Real') ? 'real' : 'proy';
+        // Si solo hay compras con tarjeta (no mueven el saldo ese dia), la marca va hueca.
+        const marca = !tt.length ? '' : tt.every(m => isCard(m.cuentaId)) ? 'tc' : tt.some(m => m.estado === 'Proyectado' && m.fecha < t0) ? 'venc' : tt.some(m => m.estado === 'Real') ? 'real' : 'proy';
         const dots = marca ? '<i class="mk ' + marca + '"></i>' : '';
         cells += '<div class="' + cls + '" data-act="day" data-d="' + x.d + '"' + (wk.locked ? '' : ' data-drop="' + x.d + '"') + '>' +
           '<span class="dn">' + x.dd.getDate() + '</span>' +
           '<div class="dots">' + dots + '</div><div class="chips">' + x.moves.map(m => chipHtml(m, wk.locked)).join('') + '</div>' +
-          (x.moves.length ? '<div class="dnet ' + (x.net >= 0 ? 'pos' : 'neg') + '">' + (x.net > 0 ? '+' : '') + compact(x.net) + '</div>' +
+          (x.moves.length ? (Math.abs(x.net) >= 0.005 ? '<div class="dnet ' + (x.net >= 0 ? 'pos' : 'neg') + '">' + (x.net > 0 ? '+' : '') + compact(x.net) + '</div>' : '<div class="dnet zero">·</div>') +
             '<div class="dbal' + (x.bal < 0 ? ' neg' : '') + '" title="Saldo al cierre del día">' + compact(x.bal) + '</div>' : '') + '</div>';
       });
       g += '<div class="wk' + (wk.locked ? ' locked' : '') + '" data-wk="' + wk.start + '">' + wkBar(wk) + '<div class="wk-days">' + cells + '</div></div>';
@@ -896,14 +894,6 @@ function summaryBody(md) {
   };
   let h = hasUSD() ? '<div class="seg cur-seg wide">' + [['PEN', 'Soles (S/)'], ['USD', 'Dólares (US$)']].map(x => '<button class="' + (S.moneda === x[0] ? 'on' : '') + '" data-act="moneda" data-v="' + x[0] + '">' + x[1] + '</button>').join('') + '</div>' : '';
   if (S.filter) h += '<div class="banner warn">🔎 <span>Mostrando solo <b>' + esc(ctaName(S.filter)) + '</b>. <button class="link" data-act="filter" data-id="">Ver todas las cuentas</button></span></div>';
-  // Aviso: gastos/ingresos hechos directamente en cuentas de ahorro no entran en este resumen.
-  const mk = monthKey(md);
-  const fuera = S.movs.filter(m => m.fecha.startsWith(mk) && isAhorro(m.cuentaId) && !m.enlace && m.categoria !== CAT_SALDO_INI);
-  if (fuera.length) {
-    const ctas = Array.from(new Set(fuera.map(m => ctaName(m.cuentaId))));
-    h += '<div class="banner info">ℹ️ <span>' + fuera.length + ' movimiento(s) de este mes (' + moneyPlus(sum(fuera, m => m.monto)) + ') están en cuentas de <b>ahorro</b> (' + esc(ctas.join(', ')) +
-      ') y no se incluyen aquí. Si son cuentas del día a día, cámbialas a <b>Corriente</b> en Más → Cuentas.</span></div>';
-  }
   h += '<div class="seg">' + tabs.map(tb => '<button class="' + (S.sumTab === tb[0] ? 'on' : '') + '" data-act="sumTab" data-t="' + tb[0] + '">' + tb[1] + '</button>').join('') + '</div>';
   h += '<div class="summary"><div class="sum-grid"><div><h4 class="pos">Ingresos</h4>' + list(o.ing, 'pos') + '</div><div><h4 class="neg">Egresos</h4>' + list(o.egr, 'neg', true) + '</div>' +
     '<div class="sum-box">' + (ini != null ? '<div class="kv"><span>Saldo inicial del mes</span><b class="' + (ini < 0 ? 'neg' : '') + '">' + money(ini) + '</b></div>' : '') +
@@ -911,6 +901,7 @@ function summaryBody(md) {
       Object.keys(o.ini).map(k => '<div class="kv sub"><span>' + esc(k) + '</span><span>' + moneyPlus(o.ini[k]) + '</span></div>').join('') : '') +
     '<div class="kv"><span>Total ingresos</span><b class="pos">' + money(o.sumIng) + '</b></div><div class="kv"><span>Total egresos</span><b class="neg">' + money(o.sumEgr) + '</b></div>' +
     (Math.abs(o.aho) > 0.004 ? '<div class="kv"><span>' + (o.aho >= 0 ? '🐷 Enviado a ahorro' : '🐷 Retirado de ahorro') + '</span><b class="blue">' + moneyPlus(-o.aho) + '</b></div>' : '') +
+    (Math.abs(o.ahoIn) > 0.004 ? '<div class="kv sub"><span>' + (o.ahoIn >= 0 ? '🐷 Pasado a tus cuentas de ahorro' : '🐷 Sacado de tus cuentas de ahorro') + ' (no cambia el saldo)</span><span>' + money(Math.abs(o.ahoIn)) + '</span></div>' : '') +
     (Math.abs(o.cam) > 0.004 ? '<div class="kv"><span>💱 Cambio de moneda</span><b class="blue">' + moneyPlus(-o.cam) + '</b></div>' : '') +
     (Math.abs(o.tc) > 0.004 ? '<div class="kv"><span>💳 Compras con tarjeta (se pagan después)</span><b class="blue">' + moneyPlus(o.tc) + '</b></div>' : '') +
     (Math.abs(o.tar) > 0.004 ? '<div class="kv"><span>💳 Pagos de tarjeta</span><b class="blue">' + moneyPlus(-o.tar) + '</b></div>' : '') +
@@ -920,6 +911,14 @@ function summaryBody(md) {
 }
 
 /* ---------- Fila de movimiento (listas) ---------- */
+// Cuando se paga una compra con tarjeta (para la pantalla del dia).
+function notaTarjeta(m) {
+  if (!isCard(m.cuentaId)) return '';
+  if (m.monto >= 0) return 'Abono a la tarjeta';
+  const cfg = cardCfg(cta(m.cuentaId)), c0 = closeOf(m.fecha, cfg);
+  if (m.cuotas > 1) return m.cuotas + ' cuotas · la ' + ((m.cuotasPrev || 0) + 1) + 'ª se paga el ' + shortDate(dueOf(shiftClose(c0, cfg, m.cuotasPrev || 0), cfg));
+  return 'Se paga el ' + shortDate(dueOf(c0, cfg));
+}
 function movRow(m, o) {
   o = o || {};
   const locked = isMovLocked(m);
@@ -943,7 +942,7 @@ function movRow(m, o) {
     '<span class="mv-bar"></span><span class="mv-ico">' + catIcon(m.categoria) + '</span>' +
     '<div class="mv-main"><div class="mv-t">' + esc(title) + (locked ? ' <span class="tag">🔒</span>' : '') + (m.revisar ? ' <span class="tag rev">🔔</span>' : '') + '</div>' +
       '<div class="mv-s">' + (m.adjunto ? '📎 ' : '') + (o.date ? esc(shortDate(m.fecha)) + ' · ' : '') + '<span class="dot" style="--c:' + ctaColor(m.cuentaId) + '"></span>' + esc(ctaName(m.cuentaId)) +
-      (meta ? ' · ' + esc((meta.icono || '🎯') + ' ' + meta.nombre) : '') + (m.detalle && m.categoria !== CAT_TRANSF ? ' · ' + esc(m.detalle) : '') + '</div></div>' +
+      (meta ? ' · ' + esc((meta.icono || '🎯') + ' ' + meta.nombre) : '') + (m.detalle && m.categoria !== CAT_TRANSF ? ' · ' + esc(m.detalle) : '') + (o.nota ? '<span class="mv-nota">' + esc(o.nota) + '</span>' : '') + '</div></div>' +
     '<div class="mv-r"><div class="mv-amt ' + (m.monto >= 0 ? 'pos' : 'neg') + '">' + moneyPlus(m.monto, cur) + '</div><div class="mv-est">' + est + (o.bal != null ? ' · ' + money(o.bal, cur) : '') + '</div></div>' +
     (acts ? '<div class="mv-acts">' + acts + '</div>' : '') + '</div></div>';
 }
@@ -954,7 +953,7 @@ function viewAhorro() {
   let h = topbar('Ahorro', eyeBtn() + (aho.length ? '<button class="pill accent" data-act="newMeta">+ Meta</button>' : ''));
   if (!aho.length) {
     return h + '<section class="card onboard"><div class="onb-emoji">🐷</div><h2>Tus ahorros, aparte</h2>' +
-      '<p>Crea una cuenta de ahorro. Su dinero no se mezcla con tu flujo del día a día y puedes repartirlo en varias metas (viaje, emergencias, etc.).</p>' +
+      '<p>Crea una cuenta de ahorro y reparte su dinero en metas (viaje, emergencias, etc.). También suma en tu calendario.</p>' +
       '<button class="btn primary big" data-act="newCuenta" data-tipo="Ahorro">Crear cuenta de ahorro</button></section>';
   }
   const tot = (cur, real) => sum(S.movs.filter(m => (!real || m.estado === 'Real') && isAhorro(m.cuentaId) && curOf(m.cuentaId) === cur), m => m.monto);
@@ -1050,7 +1049,7 @@ function openDay(d) {
     update: sh => {
       const st = sh.state;
       const all = M().filter(m => m.fecha === d).sort(sortByOrden);
-      const enFlujo = m => isCorr(m.cuentaId) && curOf(m.cuentaId) === S.moneda; // como el calendario: corrientes de la moneda elegida
+      const enFlujo = m => !isCard(m.cuentaId) && curOf(m.cuentaId) === S.moneda; // como el calendario: tus cuentas de la moneda elegida
       const net = sum(all.filter(enFlujo), m => m.monto);
       const bal = balanceUpTo(d, false, enFlujo);
       const cats = {};
@@ -1060,12 +1059,19 @@ function openDay(d) {
       let top = '';
       if (isLockedDate(d)) top += '<div class="banner lock">' + IC.lock + ' Semana cerrada: solo lectura (las cuentas de ahorro siguen editables).</div>';
       top += '<div class="stat2"><div><span>Flujo neto del día</span><b class="' + (net >= 0 ? 'pos' : 'neg') + '">' + moneyPlus(net) + '</b></div>' +
-        '<div><span>Saldo corriente al cierre</span><b class="' + (bal < 0 ? 'neg' : '') + '">' + money(bal) + '</b></div></div>';
+        '<div><span>Saldo al cierre</span><b class="' + (bal < 0 ? 'neg' : '') + '">' + money(bal) + '</b></div></div>';
       const openCats = !!$('details.cats[open]', sh.body);
       if (Object.keys(cats).length) top += '<details class="cats"' + (openCats ? ' open' : '') + '><summary>Sumas por categoría</summary>' + Object.keys(cats).map(k => '<div class="kv"><span>' + esc(k) + '</span><b class="' + (cats[k] >= 0 ? 'pos' : 'neg') + '">' + moneyPlus(cats[k]) + '</b></div>').join('') + '</details>';
       let h = '';
       if (q || st.est) h += '<p class="muted small">Mostrando ' + list.length + ' de ' + all.length + ' · Subtotal ' + moneyPlus(sum(list, m => m.monto)) + '</p>';
-      h += list.length ? '<div class="list">' + list.map(m => movRow(m, { order: st.order })).join('') + '</div>'
+      // Tres grupos: lo que mueve el saldo del calendario, las compras con tarjeta (se pagan despues) y lo de la otra moneda.
+      const gSuma = list.filter(enFlujo), gTj = list.filter(m => isCard(m.cuentaId)), gOtra = list.filter(m => !enFlujo(m) && !isCard(m.cuentaId));
+      const grupo = (titulo, arr, sub, nf) => arr.length ? (titulo ? '<h4 class="sec day-sec">' + titulo + (sub ? '<small>' + sub + '</small>' : '') + '</h4>' : '') +
+        '<div class="list' + (nf ? ' nf' : '') + '">' + arr.map(m => movRow(m, { order: st.order, nota: nf ? notaTarjeta(m) : '' })).join('') + '</div>' : '';
+      const varios = (gTj.length || gOtra.length) && gSuma.length;
+      h += list.length ? grupo(varios ? 'Mueven tu saldo' : '', gSuma, varios ? moneyPlus(sum(gSuma, m => m.monto)) : '') +
+          grupo('Con tarjeta de crédito', gTj, 'no restan hoy: se pagan en su fecha', true) +
+          grupo(S.moneda === 'PEN' ? 'En dólares' : 'En soles', gOtra, 'van en su propio calendario', true)
         : '<div class="empty small"><p>' + (all.length ? 'Ningún movimiento coincide.' : 'Sin movimientos este día.') + '</p></div>';
       if (all.length) {
         h += '<div class="btn-row">' +
@@ -1093,12 +1099,12 @@ function openMovForm(p) {
     fecha: m.fecha, monto: Math.abs(m.monto).toFixed(2), cuentaId: m.cuentaId, categoria: m.categoria, detalle: m.detalle, estado: m.estado, metaId: m.metaId,
     desdeId: m.enlace ? (m.monto < 0 ? m.cuentaId : (partner || {}).cuentaId) : '', haciaId: m.enlace ? (m.monto < 0 ? (partner || {}).cuentaId : m.cuentaId) : '',
     metaDesdeId: m.enlace ? (m.monto < 0 ? m.metaId : (partner || {}).metaId) : '', metaHaciaId: m.enlace ? (m.monto < 0 ? (partner || {}).metaId : m.metaId) : '',
-    montoHacia: '', moneda: movCur(m), cuotas: m.cuotas || 1, cuotaMonto: m.cuotaMonto || '', monedaTarjeta: partner && isCard(partner.cuentaId) ? movCur(partner) : movCur(m)
+    montoHacia: '', moneda: movCur(m), cuotas: m.cuotas || 1, cuotaMonto: m.cuotaMonto || '', conInt: conIntereses(m), cuotasPrev: m.cuotasPrev || 0, monedaTarjeta: partner && isCard(partner.cuentaId) ? movCur(partner) : movCur(m)
   } : {
     modo: p.modo || (p.categoria === CAT_SALDO_INI ? 'ingreso' : 'gasto'),
     fecha: p.fecha || today(), monto: '', cuentaId: p.cuentaId || (S.filter || firstCorr), categoria: p.categoria || '', detalle: '', estado: '', metaId: p.metaId || '',
     desdeId: p.desdeId || firstCorr, haciaId: p.haciaId || '', metaDesdeId: p.metaDesdeId || '', metaHaciaId: p.metaHaciaId || '', montoHacia: '',
-    moneda: p.moneda || 'PEN', cuotas: 1, cuotaMonto: '', monedaTarjeta: p.monedaTarjeta || 'PEN'
+    moneda: p.moneda || 'PEN', cuotas: 1, cuotaMonto: '', conInt: false, cuotasPrev: 0, monedaTarjeta: p.monedaTarjeta || 'PEN'
   };
   if (!m && p.monto) F.monto = Number(p.monto).toFixed(2);
   if (!m && p.estado) F.estado = p.estado;
@@ -1144,15 +1150,25 @@ function openMovForm(p) {
         if (isAhorro(f.desdeId) && metasDe(f.desdeId).length) h += '<label class="fld"><span>Retirar de la meta</span><select name="metaDesdeId">' + metaOpts(f.desdeId, f.metaDesdeId) + '</select></label>';
         if (isAhorro(f.haciaId) && metasDe(f.haciaId).length) h += '<label class="fld"><span>Asignar a la meta</span><select name="metaHaciaId">' + metaOpts(f.haciaId, f.metaHaciaId) + '</select></label>';
       } else {
-        h += '<label class="fld"><span>Cuenta</span><select name="cuentaId" data-change="movCta">' + cuentaOpts(f.cuentaId, m ? 'all' : 'active') + '</select></label>';
+        h += '<label class="fld"><span>' + (m && m.estado === 'Proyectado' ? 'Cuenta · al marcarlo como real, elige con cuál se pagó' : 'Cuenta') + '</span><select name="cuentaId" data-change="movCta">' + cuentaOpts(f.cuentaId, m ? 'all' : 'active') + '</select></label>';
         if (isAhorro(f.cuentaId) && metasDe(f.cuentaId).length) h += '<label class="fld"><span>Meta</span><select name="metaId">' + metaOpts(f.cuentaId, f.metaId) + '</select></label>';
         if (isCard(f.cuentaId)) {
           h += '<div class="fld"><span>Moneda de la ' + (f.modo === 'gasto' ? 'compra' : 'devolución') + '</span><div class="seg">' + [['PEN', 'Soles (S/)'], ['USD', 'Dólares (US$)']].map(x => '<button type="button" class="' + (f.moneda === x[0] ? 'on' : '') + '" data-act="movMoneda" data-v="' + x[0] + '">' + x[1] + '</button>').join('') + '</div></div>';
           if (f.modo === 'gasto') {
-            const n = Math.max(1, parseInt(f.cuotas, 10) || 1), mt = parseAmount(f.monto), q = parseAmount(f.cuotaMonto) || (mt / n);
-            h += '<div class="row2"><label class="fld"><span>Cuotas</span><input name="cuotas" type="number" min="1" max="60" inputmode="numeric" value="' + n + '" data-change="movCta"></label>' +
-              (n > 1 ? '<label class="fld"><span>Cuota mensual (si tiene intereses)</span><input name="cuotaMonto" inputmode="decimal" placeholder="' + (mt ? (mt / n).toFixed(2) : '0.00') + '" value="' + esc(f.cuotaMonto) + '" data-change="movCta"></label>' : '<div></div>') + '</div>' +
-              (n > 1 && mt > 0 ? '<p class="muted small">Se factura ' + money(q, f.moneda) + ' en cada uno de los próximos ' + n + ' cortes' + (q * n - mt > 0.005 ? ' · intereses: ' + money(q * n - mt, f.moneda) : '') + '. En el resumen, el gasto cuenta completo en la fecha de la compra.</p>' : '');
+            const n = Math.max(1, parseInt(f.cuotas, 10) || 1), mt = parseAmount(f.monto), cfgT = cardCfg(cta(f.cuentaId)), tea = cardTea(cfgT, f.moneda);
+            h += '<div class="fld"><span>¿Cómo la pagaste?</span><div class="seg">' + [['0', 'En un solo pago'], ['1', 'En cuotas']].map(x => '<button type="button" class="' + ((n > 1) === (x[0] === '1') ? 'on' : '') + '" data-act="movCuotasSi" data-v="' + x[0] + '">' + x[1] + '</button>').join('') + '</div></div>';
+            if (n > 1) {
+              const est = cuotaEstimada(mt, n, tea);
+              h += '<div class="row2"><label class="fld"><span>Número de cuotas</span><input name="cuotas" type="number" min="2" max="60" inputmode="numeric" value="' + n + '" data-change="movCta"></label>' +
+                '<label class="fld"><span>Ya pagadas</span><input name="cuotasPrev" type="number" min="0" max="' + (n - 1) + '" inputmode="numeric" value="' + (parseInt(f.cuotasPrev, 10) || 0) + '" data-change="movCta"></label></div>' +
+                '<div class="fld"><span>¿Las cuotas tienen intereses?</span><div class="seg">' + [['0', 'Sin intereses'], ['1', 'Con intereses']].map(x => '<button type="button" class="' + (!!f.conInt === (x[0] === '1') ? 'on' : '') + '" data-act="movInteres" data-v="' + x[0] + '">' + x[1] + '</button>').join('') + '</div></div>';
+              if (f.conInt) h += '<label class="fld"><span>Cuota mensual según el banco</span><input name="cuotaMonto" inputmode="decimal" placeholder="' + (mt ? est.toFixed(2) : '0.00') + '" value="' + esc(f.cuotaMonto) + '" data-change="movCta"></label>' +
+                '<small class="muted">' + (tea ? 'Si la dejas vacía usamos ' + money(est, f.moneda) + ', estimada con la TEA de ' + tea + '%.' : 'Anota la TEA de la tarjeta (Editar tarjeta) para estimarla.') + ' La del banco es la exacta.</small>';
+              const q = f.conInt ? (parseAmount(f.cuotaMonto) || est) : cuotaPlan({ monto: mt, cuotas: n })[0];
+              if (mt > 0) h += '<p class="muted small">Se factura ' + money(q, f.moneda) + ' en cada uno de los próximos ' + n + ' cortes' + (f.conInt && q * n - mt > 0.005 ? ' · intereses: ' + money(q * n - mt, f.moneda) : '') + '. Cada cuota aparece en el calendario en su fecha de pago; en el resumen del mes, la compra cuenta completa como gasto en su fecha.</p>';
+            } else if (mt > 0 && f.cuentaId) {
+              h += '<p class="muted small">No resta de tus cuentas hoy: se suma al estado de cuenta que cierra el ' + esc(shortDate(closeOf(f.fecha, cfgT))) + ' y se paga el ' + esc(shortDate(dueOf(closeOf(f.fecha, cfgT), cfgT))) + '.</p>';
+            }
           }
         }
         h += '<label class="fld"><span>Categoría</span><select name="categoria">' + catOpts(f.categoria || defaultCat(f.modo)) + '</select></label>';
@@ -1187,7 +1203,7 @@ function openMovForm(p) {
 }
 function readMovForm(sh) {
   const form = $('form', sh.body), f = sh.state.F;
-  ['monto', 'montoHacia', 'fecha', 'detalle', 'cuentaId', 'categoria', 'metaId', 'desdeId', 'haciaId', 'metaDesdeId', 'metaHaciaId', 'cuotas', 'cuotaMonto'].forEach(k => { if (form[k]) f[k] = form[k].value; });
+  ['monto', 'montoHacia', 'fecha', 'detalle', 'cuentaId', 'categoria', 'metaId', 'desdeId', 'haciaId', 'metaDesdeId', 'metaHaciaId', 'cuotas', 'cuotaMonto', 'cuotasPrev'].forEach(k => { if (form[k]) f[k] = form[k].value; });
   if (form.metaId == null) f.metaId = ''; // la cuenta elegida no tiene metas
   if (form.metaDesdeId == null) f.metaDesdeId = '';
   if (form.metaHaciaId == null) f.metaHaciaId = '';
@@ -1222,7 +1238,14 @@ async function submitMov(sh) {
   // Transferencia entre monedas: "monto" sale de Desde y "montoHacia" llega a Hacia.
   const side = id => isCard(id) ? f.monedaTarjeta : curOf(id);
   const cross = f.modo === 'transfer' && side(f.desdeId) !== side(f.haciaId);
-  const tjExtra = isCard(f.cuentaId) && f.modo !== 'transfer' ? { moneda: f.moneda, cuotas: f.modo === 'gasto' ? (parseInt(f.cuotas, 10) || 1) : 1, cuotaMonto: parseAmount(f.cuotaMonto) } : {};
+  let tjExtra = {};
+  if (isCard(f.cuentaId) && f.modo !== 'transfer') {
+    const n = f.modo === 'gasto' ? Math.max(1, parseInt(f.cuotas, 10) || 1) : 1;
+    // Con intereses: la cuota del banco o, si no se puso, la estimada con la TEA. Sin intereses: vacia.
+    const q = n > 1 && f.conInt ? (parseAmount(f.cuotaMonto) || cuotaEstimada(monto, n, cardTea(cardCfg(cta(f.cuentaId)), f.moneda))) : 0;
+    if (n > 1 && f.conInt && !(q * n > monto + 0.005)) return toast('Con intereses, la cuota por ' + n + ' debe sumar más que el monto. Revisa la cuota o elige "Sin intereses".', 'error');
+    tjExtra = { moneda: f.moneda, cuotas: n, cuotaMonto: q, cuotasPrev: n > 1 ? Math.min(n - 1, Math.max(0, parseInt(f.cuotasPrev, 10) || 0)) : 0 };
+  }
   const montoIn = cross ? parseAmount(f.montoHacia) : monto;
   if (cross && !(montoIn > 0)) return toast('Indica cuánto llega a ' + ctaName(f.haciaId) + '.', 'error');
   const btn = $('button[type=submit]', sh.body);
@@ -1239,7 +1262,7 @@ async function submitMov(sh) {
       await write('updateMovement', [{ id: m.id, fecha: f.fecha, tipo: f.modo === 'gasto' ? 'Salida' : 'Ingreso', cuentaId: f.modo === 'transfer' ? m.cuentaId : f.cuentaId,
         categoria: f.categoria, monto: ownMonto, montoPartner: m.enlace ? otherMonto : null, detalle: f.detalle, estado: f.estado,
         metaId: f.modo === 'transfer' ? (ownOut ? f.metaDesdeId : f.metaHaciaId) : f.metaId,
-        moneda: m.enlace ? (isCard(m.cuentaId) ? f.monedaTarjeta : undefined) : tjExtra.moneda, cuotas: tjExtra.cuotas, cuotaMonto: tjExtra.cuotaMonto }], { ok: 'Cambios guardados.' });
+        moneda: m.enlace ? (isCard(m.cuentaId) ? f.monedaTarjeta : undefined) : tjExtra.moneda, cuotas: tjExtra.cuotas, cuotaMonto: tjExtra.cuotaMonto, cuotasPrev: tjExtra.cuotasPrev }], { ok: 'Cambios guardados.' });
       // En transferencias, la cuenta y la meta del otro lado se guardan en su propio movimiento.
       if (m.enlace) {
         const p = partnerOf(getMov(m.id) || m);
@@ -1311,7 +1334,7 @@ function openAdjunto(id) {
 
 /* ---------- Presupuestos: aviso al cruzar el 80% o el 100% ---------- */
 function presupSnapshot() {
-  const ms = monthStats(firstOfMonth(pd(today())), corrPEN, 'PEN');
+  const ms = monthStats(firstOfMonth(pd(today())), flowPEN, 'PEN');
   const out = {};
   Object.keys(S.presup).forEach(c => { out[c] = (ms.total.egr[c] || 0) / S.presup[c]; });
   return out;
@@ -1399,8 +1422,8 @@ function openCuentas() {
             '<b class="' + (ctaBalance(c.id, true) < 0 ? 'neg' : '') + '">' + money(ctaBalance(c.id, true), c.moneda) + '</b></button>';
         }).join('') + '</div>' : '<p class="muted small center">Ninguna.</p>');
       };
-      return grp('Corriente', 'Corrientes', 'Forman el flujo del calendario y el saldo disponible.') + grp('Ahorro', 'Ahorro', 'Van aparte del flujo y pueden tener metas.') +
-        grp('Tarjeta', 'Tarjetas de crédito', 'Sus compras cuentan como gasto en su fecha; el pago aparece proyectado en la fecha de pago.');
+      return grp('Corriente', 'Corrientes', 'Suman en el calendario y en tu saldo.') + grp('Ahorro', 'Ahorro', 'También suman en el calendario; además pueden tener metas.') +
+        grp('Tarjeta', 'Tarjetas de crédito', 'La compra no resta el día que la haces: el pago y cada cuota restan en su fecha de pago.');
     }
   });
 }
@@ -1412,8 +1435,8 @@ function openCuentaForm(p) {
     kind: 'ctaform', closeLabel: 'Cancelar', title: c ? (c.tipo === 'Tarjeta' ? 'Editar tarjeta' : 'Editar cuenta') : 'Nueva cuenta', state: { F },
     render: sh => {
       const f = sh.state.F, tj = f.tipo === 'Tarjeta', cfg = f.config;
-      const ayuda = { Corriente: 'Suma a tu flujo disponible y aparece en el calendario.', Ahorro: 'No suma al disponible del día a día. Puedes crear metas y repartir su dinero entre ellas.',
-        Tarjeta: 'Bimoneda (soles y dólares). Cada compra cuenta como gasto en su fecha y el pago del estado de cuenta se proyecta en tu cuenta de pago.' };
+      const ayuda = { Corriente: 'Para el día a día. Suma en el calendario.', Ahorro: 'Suma en el calendario y puedes repartir su dinero en metas.',
+        Tarjeta: 'Bimoneda (soles y dólares). La compra cuenta como gasto en su fecha; en el calendario resta el pago de cada estado de cuenta y cada cuota, en su fecha de pago.' };
       let h = '<form data-form="cuenta">' +
         '<label class="fld"><span>Nombre</span><input name="nombre" value="' + esc(f.nombre) + '" placeholder="' + (tj ? 'Ej. Visa BCP, Mastercard Interbank' : 'Ej. BCP Sueldo, Interbank, Ahorro BBVA') + '" required autocomplete="off"></label>' +
         '<div class="fld"><span>Tipo</span><div class="seg">' + [['Corriente', 'Corriente'], ['Ahorro', 'Ahorro'], ['Tarjeta', 'Tarjeta crédito']].map(t => '<button type="button" class="' + (f.tipo === t[0] ? 'on' : '') + '" data-act="ctaTipo" data-v="' + t[0] + '">' + t[1] + '</button>').join('') + '</div>' +
@@ -1424,7 +1447,13 @@ function openCuentaForm(p) {
         h += '<div class="row2"><label class="fld"><span>Día de corte</span><input name="corte" type="number" min="1" max="31" inputmode="numeric" value="' + esc(cfg.corte) + '" required></label>' +
           '<label class="fld"><span>Día de pago</span><input name="pago" type="number" min="1" max="31" inputmode="numeric" value="' + esc(cfg.pago) + '" required></label></div>' +
           '<small class="muted">Si el día de pago es menor o igual al de corte, se paga el mes siguiente (ej. corte 25, pago 10).</small>' +
-          '<label class="fld"><span>Línea de crédito (S/, opcional)</span><input name="linea" inputmode="decimal" placeholder="0.00" value="' + (cfg.linea ? esc(cfg.linea) : '') + '"></label>' +
+          '<div class="row2"><label class="fld"><span>Línea de crédito (S/)</span><input name="linea" inputmode="decimal" placeholder="0.00" value="' + (cfg.linea ? esc(cfg.linea) : '') + '"></label>' +
+          '<label class="fld"><span>Últimos 4 dígitos</span><input name="ult4" inputmode="numeric" maxlength="4" placeholder="1234" value="' + esc(cfg.ult4 || '') + '"></label></div>' +
+          '<div class="row2"><label class="fld"><span>TEA compras soles (%)</span><input name="tea" inputmode="decimal" placeholder="Ej. 89.99" value="' + (cfg.tea ? esc(cfg.tea) : '') + '"></label>' +
+          '<label class="fld"><span>TEA compras dólares (%)</span><input name="teaUSD" inputmode="decimal" placeholder="Ej. 83.99" value="' + (cfg.teaUSD ? esc(cfg.teaUSD) : '') + '"></label></div>' +
+          '<label class="fld"><span>Seguro de desgravamen al mes (S/)</span><input name="seguro" inputmode="decimal" placeholder="0.00" value="' + (cfg.seguro ? esc(cfg.seguro) : '') + '"></label>' +
+          '<small class="muted">Las tasas y el seguro vienen en tu estado de cuenta. Sirven para estimar intereses y el pago mínimo.</small>' +
+          '<div class="fld"><span>¿Cómo pagas la tarjeta?</span><div class="seg">' + [['total', 'Pago total'], ['minimo', 'Pago mínimo']].map(x => '<button type="button" class="' + (cfg.modo === x[0] ? 'on' : '') + '" data-act="ctaModo" data-v="' + x[0] + '">' + x[1] + '</button>').join('') + '</div></div>' +
           '<label class="fld"><span>Se paga en soles desde</span><select name="pagoPEN">' + opts(pen, cfg.pagoPEN, 'La primera cuenta en soles') + '</select></label>' +
           '<label class="fld"><span>Se paga en dólares desde</span><select name="pagoUSD">' + opts(usd, cfg.pagoUSD, usd.length ? 'La primera cuenta en dólares' : 'No tengo cuenta en dólares') + '</select></label>';
         if (!c) h += '<div class="row2"><label class="fld"><span>Deuda actual S/ (opcional)</span><input name="deudaPEN" inputmode="decimal" placeholder="0.00" value="' + esc(f.deudaPEN) + '"></label>' +
@@ -1452,7 +1481,9 @@ function readCuentaForm(sh) {
   if (form.saldoInicial) f.saldoInicial = form.saldoInicial.value;
   if (form.fechaSaldo) f.fechaSaldo = form.fechaSaldo.value;
   if (form.corte) {
-    f.config = { linea: parseAmount(form.linea.value), corte: +form.corte.value || 25, pago: +form.pago.value || 10, pagoPEN: form.pagoPEN.value, pagoUSD: form.pagoUSD.value };
+    // Se conserva lo que no esta en el formulario (estados de cuenta anotados).
+    f.config = Object.assign({}, f.config, { linea: parseAmount(form.linea.value), corte: +form.corte.value || 25, pago: +form.pago.value || 10, pagoPEN: form.pagoPEN.value, pagoUSD: form.pagoUSD.value,
+      ult4: form.ult4.value.replace(/\D/g, '').slice(-4), tea: parseAmount(form.tea.value), teaUSD: parseAmount(form.teaUSD.value), seguro: parseAmount(form.seguro.value) });
     if (form.deudaPEN) { f.deudaPEN = form.deudaPEN.value; f.deudaUSD = form.deudaUSD.value; }
   }
   return f;
@@ -1782,7 +1813,8 @@ const ACT = {
     openDay(d);
   },
   exec: el => ejecutar(el.dataset.id),
-  execFromForm: el => { const sh = findSheet('movform'); if (sh) closeSheet(sh); ejecutar(el.dataset.id); },
+  // Marcar como real desde el formulario guarda tambien lo cambiado (ej. la cuenta con la que se pago de verdad).
+  execFromForm: el => { const sh = findSheet('movform'); if (!sh) return ejecutar(el.dataset.id); readMovForm(sh); sh.state.F.estado = 'Real'; submitMov(sh); },
   quickDel: el => eliminarRapido(el.dataset.id),
   delMov: el => eliminarConfirm(el.dataset.id),
   dupMov: el => {
@@ -1826,6 +1858,7 @@ const ACT = {
   newCuenta: el => openCuentaForm({ tipo: el.dataset.tipo }),
   editCuenta: el => openCuentaForm({ id: el.dataset.id }),
   ctaTipo: el => { const sh = topSheet(); readCuentaForm(sh); sh.state.F.tipo = el.dataset.v; sh.render(); },
+  ctaModo: el => { const sh = topSheet(); readCuentaForm(sh); sh.state.F.config.modo = el.dataset.v; sh.render(); },
   ctaMoneda: el => { const sh = topSheet(); readCuentaForm(sh); sh.state.F.moneda = el.dataset.v; sh.render(); },
   ctaColor: el => { const sh = topSheet(); readCuentaForm(sh); sh.state.F.color = el.dataset.v; sh.render(); },
   ctaArchive: async el => {
@@ -1920,6 +1953,12 @@ const FORMS = {
       else await write('addCuenta', [{ nombre: f.nombre, tipo: f.tipo, color: f.color, moneda: tj ? 'PEN' : (f.moneda || 'PEN'), config: tj ? f.config : null, deudaPEN: f.deudaPEN, deudaUSD: f.deudaUSD, saldoInicial: f.saldoInicial, fechaSaldo: f.fechaSaldo }], { ok: 'Cuenta creada.' });
       closeSheet(sh);
     } catch (e) {}
+  },
+  estado: async (form, sh) => {
+    const total = parseAmount(form.total.value), minimo = parseAmount(form.minimo.value);
+    if (!(total > 0) && !(minimo > 0)) return toast('Anota al menos el pago total o el mínimo.', 'error');
+    if (total > 0 && minimo > total) return toast('El mínimo no puede ser mayor que el total.', 'error');
+    try { await guardarEc(form.dataset.id, form.dataset.close, form.dataset.cur, { total, minimo }); closeSheet(sh); } catch (e) {}
   },
   meta: async (form, sh) => {
     const mt = sh.state.edit;
@@ -2205,7 +2244,7 @@ function openPresup() {
   openSheet({
     kind: 'presup', live: true, tall: true, title: 'Presupuestos',
     render: () => {
-      const ms = monthStats(firstOfMonth(pd(today())), corrPEN, 'PEN');
+      const ms = monthStats(firstOfMonth(pd(today())), flowPEN, 'PEN');
       const cats = S.cats.filter(c => !CATS_INGRESO.includes(c) && c !== CAT_TRANSF);
       let h = '<p class="muted small">Tope mensual por categoría, en soles, sobre tus cuentas corrientes. Se compara con lo gastado en el mes (real + proyectado) y la app te avisa al llegar al 80% y al pasarte. Deja en blanco para no poner tope.</p>';
       const rows = presupRows(ms);
@@ -2565,9 +2604,12 @@ Object.assign(CHANGES, {
 /* ============================ TARJETAS DE CREDITO ============================ */
 // Una tarjeta es una cuenta tipo "Tarjeta" (bimoneda: cada movimiento lleva su moneda).
 // Sus compras no mueven el flujo del dia; lo que si lo mueve es el PAGO, que la app calcula por
-// estado de cuenta (corte -> fecha de pago) y muestra como proyectado en la cuenta de pago.
+// estado de cuenta (corte -> fecha de pago) y muestra como proyectado en la cuenta de pago: el total
+// o el minimo, segun como se pague la tarjeta. Cada cuota se factura en su corte.
 // Esos pagos calculados ("virtuales") no se guardan: se recalculan con cada compra o pago.
-function cardCfg(c) { return Object.assign({ linea: 0, corte: 25, pago: 10, pagoPEN: '', pagoUSD: '' }, (c && c.config) || {}); }
+function cardCfg(c) {
+  return Object.assign({ linea: 0, corte: 25, pago: 10, pagoPEN: '', pagoUSD: '', modo: 'total', tea: 0, teaUSD: 0, seguro: 0, ult4: '', ec: {} }, (c && c.config) || {});
+}
 function dayIn(y, mo, d) { const last = new Date(y, mo + 1, 0).getDate(); return dstr(new Date(y, mo, Math.min(d, last))); }
 function closeOf(dateStr, cfg) {            // corte que cierra el ciclo de esa fecha
   const d = pd(dateStr), c = dayIn(d.getFullYear(), d.getMonth(), cfg.corte);
@@ -2580,78 +2622,140 @@ function payAccount(card, cur) {
   if (id && cta(id) && cta(id).activa) return id;
   return (activeCuentas('Corriente').find(c => (c.moneda || 'PEN') === cur) || {}).id || '';
 }
-// Cargos (con las cuotas repartidas en sus cortes) y abonos (pagos y devoluciones) de una tarjeta en una moneda.
+const r2 = n => Math.round(n * 100) / 100;
+// TEA -> tasa mensual equivalente.
+const tasaMes = tea => tea > 0 ? Math.pow(1 + tea / 100, 1 / 12) - 1 : 0;
+const cardTea = (cfg, cur) => cur === 'USD' ? cfg.teaUSD : cfg.tea;
+// Cuota fija de un credito en n cuotas a una TEA (sistema frances). Es una estimacion: la del banco manda.
+function cuotaEstimada(monto, n, tea) {
+  const i = tasaMes(tea);
+  if (!(n > 1) || !(monto > 0)) return monto || 0;
+  return i > 0 ? r2(monto * i / (1 - Math.pow(1 + i, -n))) : r2(monto / n);
+}
+// Cuotas de una compra. Sin intereses el banco trunca a centimos y la ultima lleva la diferencia
+// (asi lo hace el BBVA); con intereses cada cuota es fija (la que indica el banco).
+function cuotaPlan(m) {
+  const n = m.cuotas > 1 ? m.cuotas : 1, tot = Math.abs(m.monto);
+  if (n === 1) return [tot];
+  if (m.cuotaMonto > 0) return Array(n).fill(m.cuotaMonto);
+  const q = Math.floor(tot / n * 100 + 1e-6) / 100, arr = Array(n).fill(q);
+  arr[n - 1] = r2(tot - q * (n - 1));
+  return arr;
+}
+const conIntereses = m => m.cuotas > 1 && m.cuotaMonto > 0 && m.cuotaMonto * m.cuotas > Math.abs(m.monto) + 0.005;
+// Cargos (cada cuota en su corte; las ya pagadas antes de registrar la compra no cuentan) y abonos
+// (pagos y devoluciones) de una tarjeta en una moneda.
 function cardLines(card, cur) {
   const cfg = cardCfg(card), lines = [], credits = [];
   S.movs.forEach(m => {
     if (m.cuentaId !== card.id || movCur(m) !== cur) return;
     if (m.monto < 0) {
-      const n = m.cuotas > 1 ? m.cuotas : 1;
-      const q = n > 1 ? (m.cuotaMonto > 0 ? m.cuotaMonto : Math.abs(m.monto) / n) : Math.abs(m.monto);
-      const c0 = closeOf(m.fecha, cfg);
-      for (let i = 0; i < n; i++) lines.push({ close: i ? shiftClose(c0, cfg, i) : c0, monto: q, m, i, n });
+      const plan = cuotaPlan(m), n = plan.length, c0 = closeOf(m.fecha, cfg), cap = Math.abs(m.monto) / n;
+      for (let i = Math.min(m.cuotasPrev || 0, n - 1); i < n; i++) {
+        lines.push({ close: i ? shiftClose(c0, cfg, i) : c0, monto: plan[i], interes: n > 1 ? Math.max(0, plan[i] - cap) : 0, m, i, n });
+      }
     } else credits.push({ fecha: m.fecha, monto: m.monto, m });
   });
   return { cfg, lines, credits };
 }
-// Estado de la tarjeta: ultimo estado de cuenta cerrado (L) con lo que falta pagar, y los proximos
-// ciclos (compras + cuotas que se facturan en cada corte). Los pagos hechos despues del corte L
-// primero cubren L y el sobrante adelanta los siguientes.
+// Pago minimo estimado (cuando no se anoto el del estado de cuenta): las cuotas del mes, los intereses,
+// el seguro y una parte (4%) de lo demas. Es solo una referencia: el del banco puede variar.
+function minimoEstimado(total, cuotas, cargos) {
+  const resto = Math.max(0, total - cuotas - cargos);
+  return r2(Math.min(total, cuotas + cargos + resto * 0.04));
+}
+// Estado de la tarjeta en una moneda:
+//  - el ultimo estado de cuenta cerrado (corte L): total, minimo, lo pagado despues del corte y lo que falta;
+//  - los proximos 12 estados: compras y cuotas de cada ciclo, mas lo que quede sin pagar del anterior
+//    (si se paga el minimo) con su interes estimado y el seguro.
+// Los montos reales anotados de cada estado de cuenta (cfg.ec) corrigen la cuenta: la diferencia son
+// intereses y cargos que la app no conoce, y se arrastra a los siguientes.
 function cardStatus(card, cur) {
   const { cfg, lines, credits } = cardLines(card, cur);
-  if (!lines.length && !credits.length) return null;
+  const ecOf = k => ((cfg.ec || {})[k] || {})[cur] || null;
+  const ecKeys = Object.keys(cfg.ec || {}).filter(k => ecOf(k)).sort();
+  if (!lines.length && !credits.length && !ecKeys.length) return null;
   const t = today(), cNow = closeOf(t, cfg);
-  const L = cNow === t ? t : shiftClose(cNow, cfg, -1);
-  const billedL = sum(lines.filter(l => l.close <= L), l => l.monto);
-  const credL = sum(credits.filter(c => c.fecha <= L), c => c.monto);
-  const credAfter = sum(credits.filter(c => c.fecha > L), c => c.monto);
-  let pend = billedL - credL - credAfter, excess = 0;
-  if (pend < 0) { excess = -pend; pend = 0; }
-  const Lprev = shiftClose(L, cfg, -1);
-  const stmts = [{ close: L, due: dueOf(L, cfg), monto: pend, bruto: billedL - credL, cerrado: true, lines: lines.filter(l => l.close > Lprev && l.close <= L) }];
+  const L = cNow === t ? t : shiftClose(cNow, cfg, -1), Lprev = shiftClose(L, cfg, -1);
+  const i = tasaMes(cardTea(cfg, cur)), minimo = cfg.modo === 'minimo';
+  const billedTo = X => sum(lines.filter(l => l.close <= X), l => l.monto);
+  const credTo = X => sum(credits.filter(c => c.fecha <= X), c => c.monto);
+  // Ajustes por los estados de cuenta anotados (acumulados, en orden).
+  let ajuste = 0;
+  ecKeys.filter(k => k <= L).forEach(k => { const e = ecOf(k); if (e.total > 0) ajuste += e.total - (billedTo(k) - credTo(k) + ajuste); });
+  const inCycle = (a, b) => lines.filter(l => l.close > a && l.close <= b);
+  const eL = ecOf(L);
+  const linesL = inCycle(Lprev, L), cuotasL = sum(linesL.filter(l => l.n > 1), l => l.monto);
+  const totalL = r2(billedTo(L) - credTo(L) + ajuste);
+  const pagadoL = sum(credits.filter(c => c.fecha > L), c => c.monto);
+  const minL = eL && eL.minimo > 0 ? eL.minimo : minimoEstimado(totalL, cuotasL, 0);
+  const pendL = r2(totalL - pagadoL);
+  const dueL = dueOf(L, cfg), vencido = dueL < t;
+  let pay, carry;
+  if (!minimo) { pay = Math.max(0, pendL); carry = 0; }
+  else if (vencido && pagadoL >= minL - 0.005) { pay = 0; carry = Math.max(0, pendL); }  // pago el minimo: el resto pasa al siguiente
+  else { pay = Math.max(0, Math.min(pendL, minL - pagadoL)); carry = Math.max(0, pendL - pay); }
+  let excess = pendL < 0 ? -pendL : 0;
+  const stmts = [{ close: L, due: dueL, cerrado: true, total: totalL, minimo: minL, minEst: !(eL && eL.minimo > 0), anotado: !!(eL && eL.total > 0),
+    pagado: pagadoL, pend: Math.max(0, pendL), monto: r2(pay), carry: r2(carry), interes: 0, seguro: 0, cuotas: cuotasL, lines: linesL }];
   let prev = L;
   for (let k = 1; k <= 12; k++) {
-    const X = shiftClose(L, cfg, k);
-    const amt = sum(lines.filter(l => l.close > prev && l.close <= X), l => l.monto);
-    const use = Math.min(excess, amt); excess -= use;
-    stmts.push({ close: X, due: dueOf(X, cfg), monto: amt - use, bruto: amt, cerrado: false, lines: lines.filter(l => l.close > prev && l.close <= X) });
+    const X = shiftClose(L, cfg, k), ls = inCycle(prev, X);
+    const nuevo = sum(ls, l => l.monto), cuotas = sum(ls.filter(l => l.n > 1), l => l.monto);
+    const interes = r2(carry * i);
+    const seguro = cur === 'PEN' && cfg.seguro > 0 && (carry + nuevo) > 0.005 ? cfg.seguro : 0;
+    let total = r2(carry + interes + seguro + nuevo);
+    const use = Math.min(excess, total); excess -= use; total = r2(total - use);
+    const minK = minimoEstimado(total, cuotas, interes + seguro);
+    const payK = minimo ? minK : total;
+    stmts.push({ close: X, due: dueOf(X, cfg), cerrado: false, total, minimo: minK, minEst: true, pagado: use, pend: total, monto: r2(payK), carry: r2(total - payK),
+      interes, seguro, arrastre: r2(carry), cuotas, lines: ls });
+    carry = total - payK;
     prev = X;
   }
   const real = x => x.m.estado === 'Real';
-  const deuda = sum(lines.filter(real), l => l.monto) - sum(credits.filter(real), c => c.monto);
-  return { cfg, L, cNow, stmts, deuda, aFavor: excess };
+  const deuda = r2(sum(lines.filter(real), l => l.monto) - sum(credits.filter(real), c => c.monto) + ajuste);
+  const futuro = lines.filter(l => l.close > t && l.n > 1);
+  return { cfg, cur, L, cNow, stmts, deuda, aFavor: excess, tea: cardTea(cfg, cur), tasaMes: i,
+    cuotasFuturas: r2(sum(futuro, l => l.monto)), interesesCuotas: r2(sum(futuro, l => l.interes)),
+    ciclo: inCycle(L, cNow) };
 }
 function computeVirtual() {
   const out = [];
-  S.cuentas.filter(c => c.tipo === 'Tarjeta').forEach(card => {
+  S.cuentas.filter(c => c.tipo === 'Tarjeta').forEach((card, ci) => {
     ['PEN', 'USD'].forEach(cur => {
       const st = cardStatus(card, cur);
       const payId = st && payAccount(card, cur);
+      const o0 = 9e15 + ci * 1000 + (cur === 'USD' ? 500 : 0);  // en el dia, los pagos de cada tarjeta quedan juntos
       if (!st || !payId) return;
       const base = { virtual: true, cardId: card.id, cur, cuentaId: payId, categoria: 'PAGO TARJETA', tipo: 'Salida', estado: 'Proyectado',
         metaId: '', enlace: '', por: '', origen: 'TARJETA', moneda: cur };
       const tag = cur === 'USD' ? ' (US$)' : '';
       st.stmts.forEach(s => {
         if (!(s.monto > 0.005)) return;
-        const cuotas = s.lines.filter(l => l.n > 1), resto = sum(s.lines.filter(l => l.n <= 1), l => l.monto);
-        const separar = cuotas.length && Math.abs(sum(s.lines, l => l.monto) - s.monto) < 0.01;
-        if (!separar) {
-          out.push(Object.assign({}, base, { id: 'VIRT|' + card.id + '|' + cur + '|' + s.close, close: s.close, fecha: s.due, orden: 9e15,
-            monto: -Math.round(s.monto * 100) / 100, titulo: 'Pago ' + card.nombre + tag,
-            detalle: 'Estado de cuenta · corte ' + shortDate(s.close) + (cuotas.length ? ' · incluye ' + cuotas.length + ' cuota(s)' : '') }));
+        const idb = 'VIRT|' + card.id + '|' + cur + '|' + s.close;
+        const push = (sufijo, o) => out.push(Object.assign({}, base, { id: idb + sufijo, close: s.close, fecha: s.due, orden: o0 }, o));
+        if (st.cfg.modo === 'minimo') {
+          push('', { monto: -s.monto, titulo: 'Pago mínimo ' + card.nombre + tag, detalle: 'Estado de cuenta · corte ' + shortDate(s.close) + (s.minEst ? ' · estimado' : '') });
           return;
         }
-        if (resto > 0.005) out.push(Object.assign({}, base, { id: 'VIRT|' + card.id + '|' + cur + '|' + s.close + '|c', close: s.close, fecha: s.due, orden: 9e15,
-          monto: -Math.round(resto * 100) / 100, titulo: 'Pago ' + card.nombre + tag, detalle: 'Consumos del ciclo · corte ' + shortDate(s.close) }));
-        cuotas.forEach((l, k) => out.push(Object.assign({}, base, { id: 'VIRT|' + card.id + '|' + cur + '|' + s.close + '|q' + k, close: s.close, fecha: s.due, orden: 9e15 + k + 1,
-          monto: -Math.round(l.monto * 100) / 100, cuota: (l.i + 1) + '/' + l.n, compraId: l.m.id,
-          titulo: 'Cuota ' + (l.i + 1) + '/' + l.n + ' · ' + (l.m.detalle || l.m.categoria), detalle: card.nombre + tag + ' · corte ' + shortDate(s.close) })));
+        // Pago total: cada cuota va como su propio pago y aparte lo demas del ciclo (si aun no se pago nada).
+        const cuotas = s.lines.filter(l => l.n > 1), resto = r2(s.monto - sum(cuotas, l => l.monto));
+        if (!cuotas.length || s.pagado > 0.005 || resto < -0.005) {
+          push('', { monto: -s.monto, titulo: 'Pago ' + card.nombre + tag, detalle: 'Estado de cuenta · corte ' + shortDate(s.close) + (cuotas.length ? ' · incluye ' + cuotas.length + ' cuota(s)' : '') });
+          return;
+        }
+        const consumos = sum(s.lines.filter(l => l.n <= 1), l => l.monto) + (s.arrastre || 0);
+        if (resto > 0.005) push('|c', { monto: -resto, titulo: consumos > 0.005 || s.cerrado ? 'Pago ' + card.nombre + tag : (s.interes > 0.005 ? 'Intereses y seguro · ' : 'Seguro de desgravamen · ') + card.nombre + tag,
+          detalle: (s.cerrado ? 'Consumos del estado de cuenta' : 'Consumos del ciclo') + ' · corte ' + shortDate(s.close) + (s.interes + s.seguro > 0.005 ? ' · incluye intereses/seguro' : '') });
+        cuotas.forEach((l, k) => push('|q' + k, { orden: o0 + k + 1, monto: -r2(l.monto), cuota: (l.i + 1) + '/' + l.n, compraId: l.m.id,
+          titulo: 'Cuota ' + (l.i + 1) + '/' + l.n + ' · ' + (l.m.detalle || l.m.categoria), detalle: card.nombre + tag + ' · corte ' + shortDate(s.close) }));
       });
     });
   });
   S.virt = out;
 }
-// Pagar un estado de cuenta: con ✓ se registra de una vez (hoy, por el total); tocándolo se abre el formulario.
+// Pagar un estado de cuenta: con ✓ se registra de una vez (hoy, por el monto proyectado); tocándolo se abre el formulario.
 async function pagarVirtual(v, rapido) {
   const monto = Math.abs(v.monto);
   if (!rapido || curOf(v.cuentaId) !== v.cur) {
@@ -2664,77 +2768,113 @@ async function pagarVirtual(v, rapido) {
     toastUndo('Pago de ' + ctaName(v.cardId) + ' registrado', () => { if (id) quiet(write('deleteMovement', [id])); });
   } catch (e) {}
 }
-function cardBlock(card, cur) {
-  const st = cardStatus(card, cur);
-  if (!st) return '';
-  const next = st.stmts.find(s => s.monto > 0.005 && (s.cerrado || s.due >= today()));
-  const abierto = st.stmts[1];
-  const dias = Math.round((pd(st.cNow) - pd(today())) / 86400000);
-  const sinPago = !payAccount(card, cur);
-  let h = '<div class="tc-block"><div class="kv big"><span>Deuda ' + (cur === 'USD' ? 'en dólares' : 'en soles') + '</span><b class="' + (st.deuda > 0.005 ? 'neg' : '') + '">' + money(Math.max(0, st.deuda), cur) + '</b></div>';
-  if (st.aFavor > 0.005) h += '<div class="kv"><span>Saldo a favor</span><b class="pos">' + money(st.aFavor, cur) + '</b></div>';
-  if (next) h += '<div class="kv"><span>Próximo pago · ' + esc(dayLabel(next.due, { day: 'numeric', month: 'short' })) + (next.due < today() ? ' <span class="tag warn">vencido</span>' : '') + '</span><b>' + money(next.monto, cur) + '</b></div>';
-  h += '<div class="kv"><span>Ciclo actual · corte ' + esc(dayLabel(st.cNow, { day: 'numeric', month: 'short' })) + ' (' + (dias <= 0 ? 'hoy' : 'en ' + dias + ' día' + (dias > 1 ? 's' : '')) + ')</span><b>' + money(abierto.bruto, cur) + '</b></div>';
-  if (sinPago) h += '<div class="banner warn">No hay cuenta ' + (cur === 'USD' ? 'en dólares' : 'en soles') + ' para proyectar este pago. Elige una en Editar tarjeta.</div>';
-  return h + '</div>';
-}
+// Proximo estado de cuenta con algo por pagar.
+const nextStmt = st => st && st.stmts.find(s => s.monto > 0.005 && (s.cerrado || s.due >= today()));
 function cardSummaryRow(card) {
   const cfg = cardCfg(card);
   const sp = cardStatus(card, 'PEN'), su = cardStatus(card, 'USD');
   const dp = sp ? Math.max(0, sp.deuda) : 0, du = su ? Math.max(0, su.deuda) : 0;
-  const nexts = [sp, su].map((s, i) => s && s.stmts.find(x => x.monto > 0.005 && (x.cerrado || x.due >= today())) && { s: s.stmts.find(x => x.monto > 0.005 && (x.cerrado || x.due >= today())), cur: i ? 'USD' : 'PEN' }).filter(Boolean);
+  const np = nextStmt(sp), nu = nextStmt(su);
   const pct = cfg.linea > 0 ? Math.min(1, dp / cfg.linea) : 0;
+  const prox = [np && [np, 'PEN'], nu && [nu, 'USD']].filter(Boolean);
   return '<button class="tc-row" data-act="openTarjeta" data-id="' + card.id + '" style="--c:' + card.color + '">' +
-    '<div class="tc-top"><span class="tc-name">💳 ' + esc(card.nombre) + '</span><span class="tc-debt">' + money(dp, 'PEN') + (du > 0.005 ? ' <small>+ ' + money(du, 'USD') + '</small>' : '') + '</span></div>' +
-    (cfg.linea > 0 ? '<div class="prog" style="--c:' + (pct > 0.8 ? 'var(--red)' : card.color) + '"><i class="p-real" style="width:' + (pct * 100).toFixed(1) + '%"></i></div>' : '') +
-    '<div class="tc-sub muted small">' + (nexts.length ? 'Próximo pago: ' + nexts.map(n => esc(shortDate(n.s.due)) + ' · ' + money(n.s.monto, n.cur)).join(' / ') : 'Sin pagos pendientes') +
-    (cfg.linea > 0 ? ' · disponible ' + money(Math.max(0, cfg.linea - dp), 'PEN') : '') + '</div></button>';
+    '<span class="tc-chip"></span>' +
+    '<span class="tc-body"><span class="tc-top"><span class="tc-name">' + esc(card.nombre) + (cfg.ult4 ? ' <small>•' + esc(cfg.ult4) + '</small>' : '') + '</span>' +
+    '<span class="tc-debt">' + money(dp, 'PEN') + (du > 0.005 ? ' <small>+ ' + money(du, 'USD') + '</small>' : '') + '</span></span>' +
+    (cfg.linea > 0 ? '<span class="prog thin" style="--c:' + (pct > 0.8 ? 'var(--red)' : card.color) + '"><i class="p-real" style="width:' + (pct * 100).toFixed(1) + '%"></i></span>' : '') +
+    '<span class="tc-sub">' + (prox.length ? 'Pagar ' + prox.map(x => money(x[0].monto, x[1])).join(' + ') + ' el ' + esc(shortDate(prox[0][0].due)) + (cfg.modo === 'minimo' ? ' (mínimo)' : '') : 'Sin pagos pendientes') + '</span></span></button>';
+}
+function mesCorto(s) { return pd(s).toLocaleDateString(CFG.LOCALE, { month: 'short' }).replace('.', ''); }
+function cardBlock(card, cur) {
+  const st = cardStatus(card, cur);
+  if (!st) return '';
+  const cfg = st.cfg, t = today();
+  const s0 = st.stmts[0], next = nextStmt(st) || s0;
+  const dias = Math.round((pd(next.due) - pd(t)) / 86400000);
+  const sinPago = !payAccount(card, cur);
+  const usd = cur === 'USD';
+  let h = '';
+  if (usd) h += '<h4 class="sec">En dólares</h4>';
+  // Proximo pago
+  h += '<section class="tc-pay"><div class="tc-pay-top"><div><span class="lbl">Próximo pago</span><b class="tc-pay-date">' + esc(dayLabel(next.due, { weekday: 'short', day: 'numeric', month: 'short' })) + '</b>' +
+    '<span class="muted small">' + (next.due < t ? '<span class="neg">Vencido</span>' : dias === 0 ? 'Hoy' : 'En ' + dias + ' día' + (dias > 1 ? 's' : '')) + ' · corte ' + esc(shortDate(next.close)) + '</span></div>' +
+    '<div class="tc-pay-amt">' + money(next.monto, cur) + '<small>' + (cfg.modo === 'minimo' ? 'pago mínimo' : 'pago total') + '</small></div></div>' +
+    '<div class="tc-opts"><div class="tc-opt' + (cfg.modo !== 'minimo' ? ' on' : '') + '"><span>Total del período</span><b>' + money(next.pend, cur) + '</b></div>' +
+    '<div class="tc-opt' + (cfg.modo === 'minimo' ? ' on' : '') + '"><span>Mínimo' + (next.minEst ? ' <small>(estimado)</small>' : '') + '</span><b>' + money(Math.min(next.pend, next.minimo), cur) + '</b></div></div>';
+  if (next.pagado > 0.005 && next.cerrado) h += '<p class="muted small">Ya pagaste ' + money(next.pagado, cur) + ' de este estado de cuenta.</p>';
+  if (cfg.modo === 'minimo' && next.carry > 0.005) {
+    const intProx = r2(next.carry * st.tasaMes);
+    h += '<div class="banner warn">Pagando el mínimo quedan ' + money(next.carry, cur) + ' por pagar, con unos ' + money(intProx, cur) + ' de intereses el mes siguiente (TEA ' + st.tea + '%).</div>';
+  }
+  h += '<div class="btn-row"><button class="btn primary" data-act="tcPagar" data-id="' + card.id + '" data-cur="' + cur + '">Pagar</button>' +
+    '<button class="btn ghost" data-act="tcEstado" data-id="' + card.id + '" data-cur="' + cur + '">' + (s0.anotado ? 'Editar estado de cuenta' : 'Anotar estado de cuenta') + '</button></div>';
+  if (sinPago) h += '<div class="banner warn">No hay cuenta ' + (usd ? 'en dólares' : 'en soles') + ' para proyectar este pago. Elige una en Editar.</div>';
+  h += '</section>';
+  // Ciclo actual
+  const ciclo = st.ciclo, cicloCompras = sum(ciclo.filter(l => l.n === 1), l => l.monto), cicloCuotas = sum(ciclo.filter(l => l.n > 1), l => l.monto);
+  const dCorte = Math.round((pd(st.cNow) - pd(t)) / 86400000);
+  h += '<div class="tc-grid"><div class="tc-stat"><span>Consumos del ciclo</span><b>' + money(cicloCompras, cur) + '</b><small>' + (cicloCuotas > 0.005 ? '+ ' + money(cicloCuotas, cur) + ' en cuotas · ' : '') + 'corte ' + esc(shortDate(st.cNow)) + (dCorte <= 0 ? ' (hoy)' : ' (en ' + dCorte + ' d)') + '</small></div>' +
+    '<div class="tc-stat"><span>Cuotas por vencer</span><b>' + money(st.cuotasFuturas, cur) + '</b><small>' + (st.interesesCuotas > 0.005 ? money(st.interesesCuotas, cur) + ' son intereses' : 'sin intereses') + '</small></div>' +
+    '<div class="tc-stat"><span>TEA compras</span><b>' + (st.tea ? st.tea + '%' : '—') + '</b><small>' + (st.tea ? (st.tasaMes * 100).toFixed(2) + '% al mes' : 'Anótala en Editar') + '</small></div>' +
+    (usd || st.aFavor > 0.005 ? '<div class="tc-stat"><span>' + (usd ? 'Deuda en dólares' : 'Saldo a favor') + '</span><b>' + money(usd ? Math.max(0, st.deuda) : st.aFavor, cur) + '</b><small>' + (usd ? 'incluye cuotas futuras' : 'se descuenta del próximo pago') + '</small></div>' : '') + '</div>';
+  // Calendario de pagos (proximos 6 estados de cuenta)
+  const fut = st.stmts.filter(s => s.due >= t && s.total > 0.005).slice(0, 6);
+  if (fut.length) {
+    const mx = Math.max.apply(null, fut.map(s => s.monto)) || 1;
+    h += '<h4 class="sec">Próximos pagos</h4><div class="tc-months">' + fut.map(s => '<div class="tcm"><span class="tcm-m">' + esc(mesCorto(s.due)) + '</span>' +
+      '<span class="tcm-bar"><i style="height:' + Math.max(4, s.monto / mx * 100).toFixed(0) + '%"></i><i class="q" style="height:' + Math.max(0, Math.min(s.cuotas, s.monto) / mx * 100).toFixed(0) + '%"></i></span>' +
+      '<span class="tcm-v">' + compact(s.monto) + '</span></div>').join('') + '</div>' +
+      '<p class="muted small"><span class="key q"></span> cuotas · <span class="key"></span> resto (consumos' + (cfg.modo === 'minimo' ? ', saldo que queda e intereses' : '') + '). Cada pago aparece en el calendario en su fecha.</p>';
+  }
+  return h;
+}
+// Planes de cuotas vigentes de la tarjeta (todas las monedas).
+function cuotaPlanes(card) {
+  const cfg = cardCfg(card), t = today();
+  return S.movs.filter(m => m.cuentaId === card.id && m.cuotas > 1 && m.monto < 0).map(m => {
+    const plan = cuotaPlan(m), c0 = closeOf(m.fecha, cfg);
+    let facturadas = 0;
+    for (let i = 0; i < m.cuotas; i++) if (dueOf(shiftClose(c0, cfg, i), cfg) < t) facturadas++;
+    const sig = Math.min(m.cuotas - 1, facturadas);
+    const resta = sum(plan.slice(facturadas));
+    return { m, plan, facturadas, resta, prox: dueOf(shiftClose(c0, cfg, sig), cfg), q: plan[sig], cur: movCur(m), int: conIntereses(m), interesTotal: r2(sum(plan) - Math.abs(m.monto)) };
+  }).filter(x => x.facturadas < x.m.cuotas).sort((a, b) => a.prox < b.prox ? -1 : a.prox > b.prox ? 1 : 0);
 }
 function openTarjeta(id) {
   openSheet({
-    kind: 'tarjeta', live: true, tall: true, title: () => '💳 ' + ctaName(id),
+    kind: 'tarjeta', live: true, tall: true, title: () => ctaName(id),
     right: () => '<button class="sh-btn strong" data-act="editCuenta" data-id="' + id + '">Editar</button>',
     render: () => {
       const card = cta(id);
       if (!card) return '<p class="muted">La tarjeta ya no existe.</p>';
       const cfg = cardCfg(card);
-      let h = '<p class="muted small">Corte el día ' + cfg.corte + ' · pago el día ' + cfg.pago + (cfg.linea > 0 ? ' · línea ' + money(cfg.linea, 'PEN') : '') + '</p>';
+      const sp = cardStatus(card, 'PEN');
+      const dp = sp ? Math.max(0, sp.deuda) : 0, pct = cfg.linea > 0 ? Math.min(1, dp / cfg.linea) : 0;
+      // Tarjeta "fisica"
+      let h = '<div class="ccard" style="--c:' + card.color + '"><div class="cc-top"><span class="cc-name">' + esc(card.nombre) + '</span><span class="cc-num">•••• ' + esc(cfg.ult4 || '····') + '</span></div>' +
+        '<div class="cc-lbl">Deuda total</div><div class="cc-amt">' + countNum('tcd' + id, dp, 'PEN') + '</div>' +
+        (cfg.linea > 0 ? '<div class="cc-line"><i style="width:' + (pct * 100).toFixed(1) + '%"></i></div><div class="cc-foot"><span>Usado ' + Math.round(pct * 100) + '%</span><span>Disponible ' + money(Math.max(0, cfg.linea - dp), 'PEN') + '</span></div>'
+          : '<div class="cc-foot"><span>Corte día ' + cfg.corte + ' · pago día ' + cfg.pago + '</span></div>') + '</div>';
+      // Como se paga (total o minimo)
+      h += '<div class="seg tc-modo">' + [['total', 'Pago total'], ['minimo', 'Pago mínimo']].map(x => '<button class="' + (cfg.modo === x[0] ? 'on' : '') + '" data-act="tcModo" data-id="' + id + '" data-v="' + x[0] + '">' + x[1] + '</button>').join('') + '</div>' +
+        '<p class="muted small center">El calendario proyecta el ' + (cfg.modo === 'minimo' ? '<b>pago mínimo</b>; lo que quede pasa al mes siguiente con intereses' : '<b>pago total</b> de cada estado de cuenta, con cada cuota por separado') + '.</p>';
       const blocks = ['PEN', 'USD'].map(cur => cardBlock(card, cur)).join('');
       h += blocks || '<div class="empty small"><p>Aún no hay compras en esta tarjeta.</p></div>';
-      h += '<div class="btn-row"><button class="btn primary" data-act="tcCompra" data-id="' + id + '">+ Compra</button><button class="btn" data-act="tcPagar" data-id="' + id + '">Pagar</button></div>';
-      // Proximos pagos (incluye cuotas que se facturan en los cortes que vienen)
-      const prox = S.virt.filter(v => v.cardId === id).sort((a, b) => a.fecha < b.fecha ? -1 : 1);
-      if (prox.length) h += '<h4 class="sec">Pagos proyectados</h4><div class="list">' + prox.slice(0, 8).map(v => movRow(v, { date: true })).join('') + '</div>';
-      // Cuotas vigentes
-      const cuotas = S.movs.filter(m => m.cuentaId === id && m.cuotas > 1 && m.monto < 0).map(m => {
-        const c0 = closeOf(m.fecha, cfg);
-        let pagadas = 0;
-        for (let i = 0; i < m.cuotas; i++) if (shiftClose(c0, cfg, i) <= today()) pagadas++;
-        const q = m.cuotaMonto > 0 ? m.cuotaMonto : Math.abs(m.monto) / m.cuotas;
-        return { m, pagadas, q, resta: (m.cuotas - pagadas) * q };
-      }).filter(x => x.pagadas < x.m.cuotas);
-      // Cuotas por pagar: cada cuota con la fecha de pago del estado de cuenta en que se factura.
-      const porPagar = [], pendPorCorte = {};
-      ['PEN', 'USD'].forEach(c => { const st = cardStatus(card, c); pendPorCorte[c] = {}; if (st) st.stmts.forEach(x => { pendPorCorte[c][x.close] = x.monto; }); });
-      S.movs.filter(m => m.cuentaId === id && m.cuotas > 1 && m.monto < 0).forEach(m => {
-        const c0 = closeOf(m.fecha, cfg), q = m.cuotaMonto > 0 ? m.cuotaMonto : Math.abs(m.monto) / m.cuotas;
-        for (let i = 0; i < m.cuotas; i++) {
-          const cl = shiftClose(c0, cfg, i), due = dueOf(cl, cfg);
-          const pend = pendPorCorte[movCur(m)][cl];
-          if (due >= today() && !(pend != null && pend < 0.005)) porPagar.push({ m, i, due, q }); // se quitan las de estados de cuenta ya pagados
-        }
-      });
-      porPagar.sort((a, b) => a.due < b.due ? -1 : a.due > b.due ? 1 : 0);
-      if (porPagar.length) {
-        const tot = {}; porPagar.forEach(x => { const c = movCur(x.m); tot[c] = (tot[c] || 0) + x.q; });
-        h += '<h4 class="sec">Cuotas por pagar (' + porPagar.length + ')</h4><p class="muted small">Total pendiente en cuotas: ' + Object.keys(tot).map(c => money(tot[c], c)).join(' + ') + '. Cada una aparece en el calendario como proyectado en su fecha de pago.</p>' +
-          '<div class="list">' + porPagar.slice(0, 36).map(x => '<button class="li" data-act="editMov" data-id="' + x.m.id + '"><span class="daybox sm">' + pd(x.due).getDate() + '<small>' + esc(pd(x.due).toLocaleDateString(CFG.LOCALE, { month: 'short' }).replace('.', '')) + '</small></span>' +
-            '<div class="li-main"><b>' + esc(x.m.detalle || x.m.categoria) + '</b><small>Cuota ' + (x.i + 1) + ' de ' + x.m.cuotas + '</small></div><b>' + money(x.q, movCur(x.m)) + '</b></button>').join('') + '</div>' +
-          (porPagar.length > 36 ? '<p class="muted small center">y ' + (porPagar.length - 36) + ' más...</p>' : '');
-      }
-      if (cuotas.length) {
-        h += '<h4 class="sec">Compras en cuotas</h4><div class="list">' + cuotas.map(x => '<button class="li" data-act="editMov" data-id="' + x.m.id + '"><span class="cat-ico static">' + catIcon(x.m.categoria) + '</span><div class="li-main"><b>' + esc(x.m.detalle || x.m.categoria) + '</b>' +
-          '<small>Cuota ' + Math.min(x.m.cuotas, x.pagadas + 1) + ' de ' + x.m.cuotas + ' · ' + money(x.q, movCur(x.m)) + '/mes' + (x.m.cuotaMonto > 0 ? ' · con intereses ' + money(x.q * x.m.cuotas - Math.abs(x.m.monto), movCur(x.m)) : '') + '</small></div><b>' + money(x.resta, movCur(x.m)) + '</b></button>').join('') + '</div>';
+      h += '<button class="btn wide" data-act="tcCompra" data-id="' + id + '">+ Registrar compra</button>';
+      // Compras en cuotas
+      const planes = cuotaPlanes(card);
+      if (planes.length) {
+        const tot = {}; planes.forEach(x => { tot[x.cur] = (tot[x.cur] || 0) + x.resta; });
+        h += '<h4 class="sec">Compras en cuotas <small class="muted">' + Object.keys(tot).map(c => money(tot[c], c)).join(' + ') + ' por pagar</small></h4><div class="list">' +
+          planes.map(x => {
+            const pagadas = x.facturadas, n = x.m.cuotas;
+            return '<button class="li plan" data-act="editMov" data-id="' + x.m.id + '"><span class="cat-ico static">' + catIcon(x.m.categoria) + '</span>' +
+              '<div class="li-main"><b>' + esc(x.m.detalle || x.m.categoria) + '</b>' +
+              '<small>Cuota ' + (pagadas + 1) + ' de ' + n + ' · ' + money(x.q, x.cur) + ' el ' + esc(shortDate(x.prox)) + '</small>' +
+              '<span class="prog thin" style="--c:' + card.color + '"><i class="p-real" style="width:' + (pagadas / n * 100).toFixed(1) + '%"></i></span>' +
+              '<small>' + (x.int ? '<span class="tag warn">Con intereses · ' + money(x.interesTotal, x.cur) + '</span>' : '<span class="tag ok">Sin intereses</span>') + '</small></div>' +
+              '<b>' + money(x.resta, x.cur) + '</b></button>';
+          }).join('') + '</div>';
       }
       const movs = S.movs.filter(m => m.cuentaId === id).sort((a, b) => a.fecha < b.fecha ? 1 : a.fecha > b.fecha ? -1 : 0);
       h += '<h4 class="sec">Movimientos</h4>' + (movs.length ? '<div class="list">' + movs.slice(0, 200).map(m => movRow(m, { date: true })).join('') + '</div>' : '<p class="muted small">Sin movimientos.</p>');
@@ -2742,15 +2882,54 @@ function openTarjeta(id) {
     }
   });
 }
+// Anotar el total y el minimo que trae el estado de cuenta del banco (ultimo corte).
+function openEstadoCuenta(id, cur) {
+  const card = cta(id);
+  if (!card) return;
+  const st = cardStatus(card, cur), cfg = cardCfg(card);
+  const L = st ? st.L : shiftClose(closeOf(today(), cfg), cfg, -1);
+  const e = ((cfg.ec || {})[L] || {})[cur] || {};
+  const s0 = st && st.stmts[0];
+  openSheet({
+    kind: 'estado', closeLabel: 'Cancelar', title: 'Estado de cuenta',
+    render: () => '<form data-form="estado" data-id="' + id + '" data-cur="' + cur + '" data-close="' + L + '">' +
+      '<p class="muted">Corte del <b>' + esc(dayLabel(L, { day: 'numeric', month: 'long' })) + '</b> · pago hasta el ' + esc(dayLabel(dueOf(L, cfg), { day: 'numeric', month: 'long' })) + '. Copia los montos de tu estado de cuenta (' + (cur === 'USD' ? 'dólares' : 'soles') + ').</p>' +
+      '<label class="fld"><span>Pago total del período</span><input name="total" inputmode="decimal" placeholder="' + (s0 ? s0.total.toFixed(2) : '0.00') + '" value="' + (e.total ? e.total.toFixed(2) : '') + '"></label>' +
+      '<label class="fld"><span>Pago mínimo del período</span><input name="minimo" inputmode="decimal" placeholder="' + (s0 ? s0.minimo.toFixed(2) : '0.00') + '" value="' + (e.minimo ? e.minimo.toFixed(2) : '') + '"></label>' +
+      '<p class="muted small">Si el total no coincide con lo que calcula la app, la diferencia (intereses, comisiones) se agrega sola y se arrastra a los meses siguientes.</p>' +
+      '<button class="btn primary big" type="submit">Guardar</button>' +
+      (e.total || e.minimo ? '<button type="button" class="btn danger-ghost wide" data-act="tcEstadoBorrar" data-id="' + id + '" data-cur="' + cur + '" data-close="' + L + '">Quitar lo anotado</button>' : '') + '</form>'
+  });
+}
+async function guardarEc(id, close, cur, val) {
+  const card = cta(id);
+  if (!card) return;
+  const cfg = cardCfg(card), ec = JSON.parse(JSON.stringify(cfg.ec || {}));
+  ec[close] = ec[close] || {};
+  if (val) ec[close][cur] = val; else delete ec[close][cur];
+  if (!Object.keys(ec[close]).length) delete ec[close];
+  await write('updateCuenta', [id, { config: Object.assign({}, cfg, { ec }) }], { ok: val ? 'Estado de cuenta anotado.' : 'Quitado.' });
+}
 Object.assign(ACT, {
   openTarjeta: el => openTarjeta(el.dataset.id),
   tcCompra: el => openMovForm({ modo: 'gasto', cuentaId: el.dataset.id }),
   tcPagar: el => {
-    const id = el.dataset.id;
-    const v = S.virt.filter(x => x.cardId === id).sort((a, b) => a.fecha < b.fecha ? -1 : 1)[0];
-    if (v) return pagarVirtual(v, false);
-    openMovForm({ modo: 'transfer', desdeId: payAccount(cta(id), 'PEN'), haciaId: id, monedaTarjeta: 'PEN', fecha: today(), estado: 'Real' });
+    const id = el.dataset.id, cur = el.dataset.cur || 'PEN';
+    const st = cardStatus(cta(id), cur), s = nextStmt(st);
+    openMovForm({ modo: 'transfer', desdeId: payAccount(cta(id), cur), haciaId: id, monedaTarjeta: cur, monto: s ? s.monto : '', fecha: today(), estado: 'Real' });
   },
+  tcModo: el => {
+    const card = cta(el.dataset.id);
+    if (!card || cardCfg(card).modo === el.dataset.v) return;
+    quiet(write('updateCuenta', [card.id, { config: Object.assign({}, cardCfg(card), { modo: el.dataset.v }) }], { ok: el.dataset.v === 'minimo' ? 'Se proyectará el pago mínimo.' : 'Se proyectará el pago total.' }));
+  },
+  tcEstado: el => openEstadoCuenta(el.dataset.id, el.dataset.cur || 'PEN'),
+  tcEstadoBorrar: async el => {
+    const sh = findSheet('estado');
+    try { await guardarEc(el.dataset.id, el.dataset.close, el.dataset.cur, null); if (sh) closeSheet(sh); } catch (e) {}
+  },
+  movCuotasSi: el => { const sh = topSheet(); readMovForm(sh); const f = sh.state.F; f.cuotas = el.dataset.v === '1' ? Math.max(2, parseInt(f.cuotas, 10) || 3) : 1; sh.render(); },
+  movInteres: el => { const sh = topSheet(); readMovForm(sh); sh.state.F.conInt = el.dataset.v === '1'; if (!sh.state.F.conInt) sh.state.F.cuotaMonto = ''; sh.render(); },
   movMoneda: el => { const sh = topSheet(); readMovForm(sh); sh.state.F.moneda = el.dataset.v; sh.render(); },
   movMonTj: el => { const sh = topSheet(); readMovForm(sh); sh.state.F.monedaTarjeta = el.dataset.v; sh.render(); },
   ctaPagoSel: () => {}
