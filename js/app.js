@@ -6,7 +6,7 @@
 'use strict';
 
 const CFG = Object.assign({ CURRENCY: 'S/', LOCALE: 'es-PE', SYNC_INTERVAL_MS: 15000, APP_NAME: 'Finanzas', APP_VERSION: '1.0.0' }, window.APP_CONFIG || {});
-CFG.APP_VERSION = '3.0.0'; // la version la marca este archivo, no config.js
+CFG.APP_VERSION = '3.1.0'; // la version la marca este archivo, no config.js
 const CAT_TRANSF = 'TRANSF. CUENTAS';
 const CAT_SALDO_INI = 'SALDO INICIAL';
 const CAT_PROTEGIDAS = [CAT_SALDO_INI, CAT_TRANSF];
@@ -126,6 +126,8 @@ async function write(action, args, opts) {
     const res = await api(action, ...args);
     if (res && (res.patches || res.meta)) applyPatch(res);
     if (!opts.noRefresh) refreshUI();
+    S.pending = Math.max(0, S.pending - 1); S._done = true;
+    busyDone(opts.ok ? 'Guardado' : 'Listo');
     if (opts.ok) toast(opts.ok, 'ok');
     return res;
   } catch (e) {
@@ -133,8 +135,10 @@ async function write(action, args, opts) {
     if (!e.auth) toast(e.message, 'error');
     throw e;
   } finally {
-    S.pending = Math.max(0, S.pending - 1);
-    setBusy(S.pending > 0);
+    if (!S._done) S.pending = Math.max(0, S.pending - 1);
+    S._done = false;
+    if (S.pending > 0) setBusy(true); else document.body.classList.remove('busy');
+    if (!S.pending && !$('#busy.done')) busyEl().classList.remove('on');
   }
 }
 function quiet(p) { p.catch(() => {}); }
@@ -220,10 +224,11 @@ function isMovLocked(m) {
   return !!(p && !lockExempt(p) && isLockedDate(p.fecha));
 }
 
-// "Flujo" del calendario = todas tus cuentas de la moneda elegida (corrientes y de ahorro). Las tarjetas
-// no: la compra no mueve la plata ese dia; lo que resta es el pago y cada cuota, en su fecha de pago.
-function inFlow(m) { return !isCard(m.cuentaId) && curOf(m.cuentaId) === S.moneda && (!S.filter || m.cuentaId === S.filter); }
-const flowPEN = m => !isCard(m.cuentaId) && curOf(m.cuentaId) === 'PEN';
+// Saldos del calendario = solo cuentas corrientes de la moneda elegida. Lo que se paga con una cuenta de
+// ahorro se ve en el calendario pero no cambia ese saldo (el ahorro se ve en su pestaña). Las tarjetas
+// tampoco: la compra no mueve la plata ese dia; lo que resta es el pago y cada cuota, en su fecha de pago.
+function inFlow(m) { return isCorr(m.cuentaId) && curOf(m.cuentaId) === S.moneda && (!S.filter || m.cuentaId === S.filter); }
+const flowPEN = corrPEN;
 function balanceUpTo(dateStr, realOnly, pred) {
   pred = pred || inFlow;
   let b = 0;
@@ -266,7 +271,29 @@ function metaStats(meta) {
 }
 
 /* ============================ UI BASICA ============================ */
-function setBusy(on) { document.body.classList.toggle('busy', !!on); }
+// Indicador de carga: una barra arriba y una pastilla 'Guardando...' mientras hay algo en vuelo; al terminar
+// bien muestra un ✓ un momento. label cambia el texto (ej. 'Sincronizando...').
+let busyTimer = null;
+function busyEl() {
+  let el = $('#busy');
+  if (!el) { el = document.createElement('div'); el.id = 'busy'; el.setAttribute('aria-live', 'polite'); el.innerHTML = '<i class="busy-bar"></i><span class="busy-pill"><span class="busy-spin"></span><span class="busy-ok">' + IC.check + '</span><span class="busy-txt"></span></span>'; document.body.appendChild(el); }
+  return el;
+}
+function setBusy(on, label) {
+  document.body.classList.toggle('busy', !!on);
+  const el = busyEl();
+  clearTimeout(busyTimer);
+  if (on) { $('.busy-txt', el).textContent = label || 'Guardando...'; el.classList.remove('done'); el.classList.add('on'); }
+  else if (el.classList.contains('on')) el.classList.remove('on');
+}
+function busyDone(label) {
+  if (S.pending > 0) return;
+  const el = busyEl();
+  $('.busy-txt', el).textContent = label || 'Listo';
+  el.classList.add('on', 'done');
+  clearTimeout(busyTimer);
+  busyTimer = setTimeout(() => el.classList.remove('on', 'done'), 900);
+}
 
 function toast(msg, type, action) {
   const wrap = $('#toasts');
@@ -554,7 +581,8 @@ function eyeBtn() {
 function countNum(key, n, cur, cls) {
   return '<span class="' + (cls || '') + '" data-count="' + n + '" data-ck="' + key + '" data-cur="' + (cur || '') + '">' + money(n, cur) + '</span>';
 }
-// Inicio: lo importante primero (cuánto tienes, qué viene, cómo va el mes) y lo demás, corto.
+// Inicio: solo cuentas corrientes (el ahorro vive en su pestaña). Orden: saldo, avisos, el mes,
+// cuentas, tarjetas, presupuestos y, al final, los próximos 7 días (plegable).
 function viewInicio() {
   const nombre = (S.user && S.user.nombre) ? S.user.nombre.split(' ')[0] : '';
   let h = '<header class="top home-top"><div class="top-row"><div class="hello"><span class="eyebrow">' + saludo() + '</span><h1>' + esc(nombre || 'Finanzas') + '</h1></div>' +
@@ -562,30 +590,26 @@ function viewInicio() {
   if (!S.loaded && !S.movs.length && !S.cuentas.length) return h + '<div class="empty"><div class="spinner"></div><p>Cargando tus datos...</p></div>';
   if (!S.cuentas.length) {
     return h + '<section class="card onboard"><div class="onb-emoji">👋</div><h2>Empecemos</h2>' +
-      '<p>Crea tus cuentas: las <b>corrientes</b> para el día a día y las de <b>ahorro</b>, que pueden tener metas. Todas suman en tu calendario.</p>' +
+      '<p>Crea tus cuentas: las <b>corrientes</b> forman tu saldo del día a día; las de <b>ahorro</b> van en su pestaña y pueden tener metas.</p>' +
       '<button class="btn primary big" data-act="newCuenta" data-tipo="Corriente">Crear cuenta corriente</button>' +
       '<button class="btn big" data-act="newCuenta" data-tipo="Ahorro">Crear cuenta de ahorro</button></section>';
   }
   const t = today();
-  const corr = activeCuentas('Corriente'), aho = activeCuentas('Ahorro');
+  const corr = activeCuentas('Corriente');
   const tarjetas = S.cuentas.filter(c => c.tipo === 'Tarjeta' && c.activa);
   const realDe = f => sum(S.movs.filter(m => m.estado === 'Real' && f(m)), m => m.monto);
-  const corrPENr = realDe(m => isCorr(m.cuentaId) && curOf(m.cuentaId) === 'PEN');
-  const ahorroPEN = realDe(m => isAhorro(m.cuentaId) && curOf(m.cuentaId) === 'PEN');
-  const total = corrPENr + ahorroPEN;
+  const disp = realDe(corrPEN);
   const finMes = dstr(new Date(pd(t).getFullYear(), pd(t).getMonth() + 1, 0));
-  const proyFin = balanceUpTo(finMes, false, flowPEN);
+  const proyFin = balanceUpTo(finMes, false, corrPEN);
   const deudaTj = sum(tarjetas, c => { const s = cardStatus(c, 'PEN'); return s ? Math.max(0, s.deuda) : 0; });
 
-  // 1) Saldo
-  h += '<section class="balance"><span class="eyebrow">Saldo en tus cuentas</span>' +
-    '<div class="bal-amt' + (total < 0 ? ' neg' : '') + '">' + countNum('tot', total, 'PEN') + '</div>' +
-    '<button class="bal-sub" data-act="goCal">Al cierre del mes, con lo proyectado: <b class="' + (proyFin < 0 ? 'neg' : '') + '">' + countNum('fin', proyFin, 'PEN') + '</b>' + IC.chevR + '</button>' +
-    '<div class="kpis"><div><span>Corrientes</span><b>' + countNum('corr', corrPENr, 'PEN') + '</b></div>' +
-    '<div><span>Ahorro</span><b>' + countNum('aho', ahorroPEN, 'PEN') + '</b></div>' +
-    (tarjetas.length ? '<div><span>Deuda tarjetas</span><b class="' + (deudaTj > 0.005 ? 'neg' : '') + '">' + countNum('tj', deudaTj, 'PEN') + '</b></div>' : '') + '</div>';
-  if (hasUSD()) {
-    const u = realDe(m => !isCard(m.cuentaId) && curOf(m.cuentaId) === 'USD');
+  // 1) Saldo (cuentas corrientes)
+  h += '<section class="balance"><div class="bal-glow"></div><span class="eyebrow">Saldo en cuentas corrientes</span>' +
+    '<div class="bal-amt' + (disp < 0 ? ' neg' : '') + '">' + countNum('disp', disp, 'PEN') + '</div>' +
+    '<div class="kpis"><button data-act="goCal"><span>Al cierre del mes</span><b class="' + (proyFin < 0 ? 'neg' : '') + '">' + countNum('fin', proyFin, 'PEN') + '</b></button>' +
+    (tarjetas.length ? '<div><span>Deuda en tarjetas</span><b>' + countNum('tj', deudaTj, 'PEN') + '</b></div>' : '') + '</div>';
+  if (corr.some(c => c.moneda === 'USD')) {
+    const u = realDe(m => isCorr(m.cuentaId) && curOf(m.cuentaId) === 'USD');
     h += '<div class="bal-usd">En dólares <b>' + countNum('usd', u, 'USD') + '</b></div>';
   }
   h += '</section>';
@@ -596,53 +620,61 @@ function viewInicio() {
   if (nRev) avisos.push('<button class="notice info" data-act="openCorreos"><i></i><span><b>' + nRev + ' del correo del banco</b> por completar</span>' + IC.chevR + '</button>');
   const venc = vencidos();
   if (venc.length) avisos.push('<button class="notice warn" data-act="openVencidos"><i></i><span><b>' + venc.length + ' proyectado' + (venc.length > 1 ? 's' : '') + ' vencido' + (venc.length > 1 ? 's' : '') + '</b> sin ejecutar</span>' + IC.chevR + '</button>');
-  const deficit = deficitDays(firstOfMonth(pd(t)), flowPEN).filter(d => d.fecha >= t);
+  const deficit = deficitDays(firstOfMonth(pd(t)), corrPEN).filter(d => d.fecha >= t);
   if (deficit.length) avisos.push('<button class="notice danger" data-act="goCal"><i></i><span><b>Saldo negativo el ' + esc(dayLabel(deficit[0].fecha, { day: 'numeric', month: 'short' })) + '</b> · llegaría a ' + money(deficit[0].saldo, 'PEN') + '</span>' + IC.chevR + '</button>');
   if (avisos.length) h += '<div class="notices">' + avisos.join('') + '</div>';
 
-  // 3) Lo que viene (7 dias)
-  const lim = addDays(t, 7);
-  const prox = M().filter(m => m.estado === 'Proyectado' && m.fecha >= t && m.fecha <= lim && !isCard(m.cuentaId) && !(m.enlace && m.tipo === 'Ingreso' && partnerOf(m)))
-    .sort((a, b) => a.fecha < b.fecha ? -1 : a.fecha > b.fecha ? 1 : sortByOrden(a, b));
-  const proxNet = sum(prox, m => m.monto);
-  h += '<section class="card"><div class="card-head"><h2>Próximos 7 días</h2>' + (prox.length ? '<span class="head-num ' + (proxNet >= 0 ? 'pos' : 'neg') + '">' + moneyPlus(proxNet, 'PEN') + '</span>' : '') + '</div>' +
-    (prox.length ? '<div class="list">' + prox.slice(0, 5).map(m => movRow(m, { date: true, noActs: true })).join('') + '</div>' +
-      (prox.length > 5 ? '<button class="link more" data-act="goCal">Ver ' + (prox.length - 5) + ' más en el calendario</button>' : '')
-      : '<p class="muted small">Nada proyectado para esta semana.</p>') + '</section>';
-
-  // 4) Este mes
-  const ms = monthStats(firstOfMonth(pd(t)), flowPEN, 'PEN');
+  // 3) Resumen del mes (cuentas corrientes)
+  const ms = monthStats(firstOfMonth(pd(t)), corrPEN, 'PEN');
   const o = ms.total, gasto = o.sumEgr, ingreso = o.sumIng, neto = ingreso - gasto - o.aho - o.cam;
   const mx = Math.max(ingreso, gasto, 1);
-  h += '<section class="card"><div class="card-head"><h2>' + esc(monthLabel(pd(t)).split(' ')[0]) + '</h2><button class="link" data-act="goCalSum">Resumen</button></div>' +
-    '<div class="flow2"><div><span>Ingresos</span><b class="pos">' + money(ingreso, 'PEN') + '</b><i style="--w:' + (ingreso / mx * 100).toFixed(1) + '%;--c:var(--green)"></i></div>' +
-    '<div><span>Gastos</span><b>' + money(gasto, 'PEN') + '</b><i style="--w:' + (gasto / mx * 100).toFixed(1) + '%;--c:var(--red)"></i></div></div>' +
+  h += '<section class="card month-card"><div class="card-head"><h2>Resumen de ' + esc(monthLabel(pd(t)).split(' ')[0].toLowerCase()) + '</h2><button class="link" data-act="goCalSum">Ver detalle</button></div>' +
+    '<div class="flow2"><div class="in"><span>Ingresos</span><b>' + money(ingreso, 'PEN') + '</b><i style="--w:' + (ingreso / mx * 100).toFixed(1) + '%"></i></div>' +
+    '<div class="out"><span>Gastos</span><b>' + money(gasto, 'PEN') + '</b><i style="--w:' + (gasto / mx * 100).toFixed(1) + '%"></i></div></div>' +
+    (Math.abs(o.aho) > 0.004 ? '<div class="kv"><span>🐷 ' + (o.aho >= 0 ? 'Enviado a ahorro' : 'Retirado de ahorro') + '</span><b class="blue">' + moneyPlus(-o.aho, 'PEN') + '</b></div>' : '') +
     '<div class="kv big"><span>Neto del mes</span><b class="' + (neto >= 0 ? 'pos' : 'neg') + '">' + moneyPlus(neto, 'PEN') + '</b></div>' +
     (Math.abs(o.tc) > 0.004 ? '<p class="muted small">De los gastos, ' + money(o.tc, 'PEN') + ' fueron con tarjeta y se pagan después.</p>' : '') +
     topCats(o.egr, o.sumEgr, 4) + '</section>';
 
-  // 5) Cuentas y tarjetas
-  h += '<div class="sec-row"><h4 class="sec">Cuentas</h4><button class="link" data-act="openCuentas">Ver todas</button></div>';
-  h += '<div class="acc-scroll">' + corr.concat(aho).map(c => {
+  // 4) Cuentas corrientes y tarjetas
+  h += '<div class="sec-row"><h4 class="sec">Cuentas corrientes</h4><button class="link" data-act="openCuentas">Ver todas</button></div>';
+  h += '<div class="acc-scroll">' + corr.map(c => {
     const b = ctaBalance(c.id, true);
     return '<button class="acc" data-act="openCuentaHist" data-id="' + c.id + '" style="--c:' + c.color + '">' +
-      '<span class="acc-tipo"><i></i>' + (c.tipo === 'Ahorro' ? 'Ahorro' : 'Corriente') + (c.moneda === 'USD' ? ' · US$' : '') + '</span><span class="acc-name">' + esc(c.nombre) + '</span>' +
+      '<span class="acc-tipo"><i></i>Corriente' + (c.moneda === 'USD' ? ' · US$' : '') + '</span><span class="acc-name">' + esc(c.nombre) + '</span>' +
       '<span class="acc-bal' + (b < 0 ? ' neg' : '') + '">' + money(b, c.moneda) + '</span></button>';
-  }).join('') + '<button class="acc add" data-act="newCuenta">' + IC.plus + '<span>Nueva</span></button></div>';
+  }).join('') + '<button class="acc add" data-act="newCuenta" data-tipo="Corriente">' + IC.plus + '<span>Nueva</span></button></div>';
   if (tarjetas.length) h += '<section class="card"><div class="card-head"><h2>Tarjetas de crédito</h2></div>' + tarjetas.map(cardSummaryRow).join('') + '</section>';
 
-  // 6) Presupuestos y metas (solo si existen)
+  // 5) Presupuestos
   const pr = presupRows(ms);
   if (pr.length) h += '<section class="card"><div class="card-head"><h2>Presupuestos</h2><button class="link" data-act="openPresup">Editar</button></div>' + pr.slice(0, 4).map(presupBar).join('') + '</section>';
-  const metas = S.metas.filter(m => m.estado !== 'Archivada' && cta(m.cuentaId));
-  if (metas.length) h += '<section class="card"><div class="card-head"><h2>Metas de ahorro</h2><button class="link" data-act="tab" data-tab="ahorro">Ver todas</button></div>' + metas.slice(0, 3).map(metaMini).join('') + '</section>';
-  if (!pr.length) h += '<button class="card cta-card" data-act="openPresup"><span class="al-ico">🎯</span><span><b>Define presupuestos</b><br><small class="muted">Un tope mensual por categoría; te avisamos al llegar al 80%.</small></span></button>';
+  else h += '<button class="card cta-card" data-act="openPresup"><span class="al-ico">🎯</span><span><b>Define presupuestos</b><br><small class="muted">Un tope mensual por categoría; te avisamos al llegar al 80%.</small></span></button>';
+
+  // 6) Próximos 7 días (al final, se puede plegar)
+  const lim = addDays(t, 7);
+  const prox = M().filter(m => m.estado === 'Proyectado' && m.fecha >= t && m.fecha <= lim && !isCard(m.cuentaId) && !(m.enlace && m.tipo === 'Ingreso' && partnerOf(m)))
+    .sort((a, b) => a.fecha < b.fecha ? -1 : a.fecha > b.fecha ? 1 : sortByOrden(a, b));
+  const proxNet = sum(prox.filter(corrPEN), m => m.monto);
+  const abierto = store.get('proxOpen', true);
+  h += '<section class="card fold' + (abierto ? ' open' : '') + '"><button class="card-head fold-head" data-act="toggleProx" aria-expanded="' + abierto + '"><h2>Próximos 7 días' + (prox.length ? ' <small class="muted">' + prox.length + '</small>' : '') + '</h2>' +
+    '<span class="fold-r">' + (prox.length ? '<span class="head-num ' + (proxNet >= 0 ? 'pos' : 'neg') + '">' + moneyPlus(proxNet, 'PEN') + '</span>' : '') + '<span class="fold-chev">' + IC.down + '</span></span></button>' +
+    '<div class="fold-body"><div>' + (prox.length ? '<div class="list">' + prox.slice(0, 8).map(m => movRow(m, { date: true, noActs: true })).join('') + '</div>' +
+      (prox.length > 8 ? '<button class="link more" data-act="goCal">Ver ' + (prox.length - 8) + ' más en el calendario</button>' : '')
+      : '<p class="muted small">Nada proyectado para esta semana.</p>') + '</div></div></section>';
   return h;
+}
+// Color estable por categoria (para sus iconos y barras).
+const CAT_COLORS = ['#0a84ff', '#30b158', '#ff9f0a', '#ff375f', '#bf5af2', '#32ade6', '#e0a800', '#ac8e68', '#5e5ce6', '#ff6b3d', '#00b8a9', '#d63384'];
+function catColor(c) {
+  let h = 0; const s = String(c || '');
+  for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) >>> 0;
+  return CAT_COLORS[h % CAT_COLORS.length];
 }
 function topCats(egr, total, n) {
   const rows = Object.keys(egr).map(k => [k, egr[k]]).sort((a, b) => b[1] - a[1]).slice(0, n || 5);
   if (!rows.length) return '';
-  return '<div class="bars">' + rows.map(r => '<div class="barrow"><span class="bl">' + catIcon(r[0]) + ' ' + esc(r[0].charAt(0) + r[0].slice(1).toLowerCase()) + '</span><span class="bt"><i style="width:' + Math.max(3, (r[1] / (total || 1)) * 100).toFixed(1) + '%"></i></span><span class="bv">' + money(r[1], 'PEN') + '</span></div>').join('') + '</div>';
+  return '<div class="bars">' + rows.map((r, i) => '<div class="barrow" style="--c:' + catColor(r[0]) + ';--i:' + i + '"><span class="bl">' + catIcon(r[0]) + ' ' + esc(r[0].charAt(0) + r[0].slice(1).toLowerCase()) + '</span><span class="bt"><i style="width:' + Math.max(3, (r[1] / (total || 1)) * 100).toFixed(1) + '%"></i></span><span class="bv">' + money(r[1], 'PEN') + '</span></div>').join('') + '</div>';
 }
 // Presupuesto: gasto del mes (real + proyectado) contra el tope de cada categoria (soles).
 function presupRows(ms) {
@@ -839,14 +871,13 @@ function viewCalendario() {
         if (x.moves.some(m => m.revisar)) cls += ' rev';
         // Una sola marca por dia: naranja si hay algo vencido, azul si hay movimientos reales, gris si solo proyectados.
         const tt = x.todos, t0 = today();
-        // Si solo hay compras con tarjeta (no mueven el saldo ese dia), la marca va hueca.
-        const marca = !tt.length ? '' : tt.every(m => isCard(m.cuentaId)) ? 'tc' : tt.some(m => m.estado === 'Proyectado' && m.fecha < t0) ? 'venc' : tt.some(m => m.estado === 'Real') ? 'real' : 'proy';
+        // Si solo hay compras con tarjeta o movimientos de ahorro (no mueven el saldo ese dia), la marca va hueca.
+        const marca = !tt.length ? '' : tt.every(m => !isCorr(m.cuentaId)) ? 'tc' : tt.some(m => m.estado === 'Proyectado' && m.fecha < t0) ? 'venc' : tt.some(m => m.estado === 'Real') ? 'real' : 'proy';
         const dots = marca ? '<i class="mk ' + marca + '"></i>' : '';
         cells += '<div class="' + cls + '" data-act="day" data-d="' + x.d + '"' + (wk.locked ? '' : ' data-drop="' + x.d + '"') + '>' +
           '<span class="dn">' + x.dd.getDate() + '</span>' +
-          '<div class="dots">' + dots + '</div><div class="chips">' + x.moves.map(m => chipHtml(m, wk.locked)).join('') + '</div>' +
-          (x.moves.length ? (Math.abs(x.net) >= 0.005 ? '<div class="dnet ' + (x.net >= 0 ? 'pos' : 'neg') + '">' + (x.net > 0 ? '+' : '') + compact(x.net) + '</div>' : '<div class="dnet zero">·</div>') +
-            '<div class="dbal' + (x.bal < 0 ? ' neg' : '') + '" title="Saldo al cierre del día">' + compact(x.bal) + '</div>' : '') + '</div>';
+          '<div class="dots">' + dots + '</div><div class="chips">' + x.todos.slice().sort(sortByOrden).map(m => chipHtml(m, wk.locked, !inFlow(m))).join('') + '</div>' +
+          (x.moves.length ? (Math.abs(x.net) >= 0.005 ? '<div class="dnet ' + (x.net >= 0 ? 'pos' : 'neg') + '">' + (x.net > 0 ? '+' : '') + compact(x.net) + '</div>' : '<div class="dnet zero">·</div>') : '') + '</div>';
       });
       g += '<div class="wk' + (wk.locked ? ' locked' : '') + '" data-wk="' + wk.start + '">' + wkBar(wk) + '<div class="wk-days">' + cells + '</div></div>';
     });
@@ -858,14 +889,14 @@ function viewCalendario() {
   h += '<button class="btn wide sum-btn" data-act="openResumen">' + IC.chart + ' Resumen de ' + esc(monthLabel(md)) + '</button>';
   return h;
 }
-function chipHtml(m, locked) {
-  const sel = S.sel.has(m.id) ? ' sel' : '';
+// nf = no mueve el saldo del calendario (tarjeta, ahorro u otra moneda): se ve atenuado.
+function chipHtml(m, locked, nf) {
+  const sel = (S.sel.has(m.id) ? ' sel' : '') + (nf ? ' nf' : '');
   const canEdit = !locked && !isMovLocked(m) && !m.virtual;
   return '<div class="chip ' + movClass(m) + sel + '" data-act="chip" data-id="' + m.id + '"' + (canEdit ? ' draggable="true" data-chip="' + m.id + '"' : '') +
     ' title="' + esc(m.categoria + (m.detalle ? ' - ' + m.detalle : '') + ' · ' + ctaName(m.cuentaId)) + '">' +
     (canEdit ? '<button class="chip-x" data-act="quickDel" data-id="' + m.id + '" aria-label="Eliminar">' + IC.x + '</button>' : '') +
     '<span class="chip-cat">' + catIcon(m.categoria) + ' ' + esc(m.virtual ? (m.titulo || 'Pago ' + ctaName(m.cardId)) : m.detalle && m.categoria === CAT_TRANSF ? m.detalle : m.categoria) + '</span>' +
-    '<span class="chip-amt">' + compact(m.monto) + '</span>' +
     (m.estado === 'Proyectado' && (canEdit || m.virtual) ? '<button class="chip-ok" data-act="exec" data-id="' + m.id + '" aria-label="Ejecutar">' + IC.check + '</button>' : '') +
     '</div>';
 }
@@ -894,6 +925,8 @@ function summaryBody(md) {
   };
   let h = hasUSD() ? '<div class="seg cur-seg wide">' + [['PEN', 'Soles (S/)'], ['USD', 'Dólares (US$)']].map(x => '<button class="' + (S.moneda === x[0] ? 'on' : '') + '" data-act="moneda" data-v="' + x[0] + '">' + x[1] + '</button>').join('') + '</div>' : '';
   if (S.filter) h += '<div class="banner warn">🔎 <span>Mostrando solo <b>' + esc(ctaName(S.filter)) + '</b>. <button class="link" data-act="filter" data-id="">Ver todas las cuentas</button></span></div>';
+  const fuera = S.movs.filter(m => m.fecha.startsWith(monthKey(md)) && isAhorro(m.cuentaId) && curOf(m.cuentaId) === S.moneda && !m.enlace && m.categoria !== CAT_SALDO_INI);
+  if (fuera.length) h += '<div class="banner info"><span>' + fuera.length + ' movimiento(s) de cuentas de ahorro este mes (' + moneyPlus(sum(fuera, m => m.monto)) + ') no suman aquí: los ves en la pestaña Ahorro.</span></div>';
   h += '<div class="seg">' + tabs.map(tb => '<button class="' + (S.sumTab === tb[0] ? 'on' : '') + '" data-act="sumTab" data-t="' + tb[0] + '">' + tb[1] + '</button>').join('') + '</div>';
   h += '<div class="summary"><div class="sum-grid"><div><h4 class="pos">Ingresos</h4>' + list(o.ing, 'pos') + '</div><div><h4 class="neg">Egresos</h4>' + list(o.egr, 'neg', true) + '</div>' +
     '<div class="sum-box">' + (ini != null ? '<div class="kv"><span>Saldo inicial del mes</span><b class="' + (ini < 0 ? 'neg' : '') + '">' + money(ini) + '</b></div>' : '') +
@@ -939,7 +972,7 @@ function movRow(m, o) {
   return '<div class="mvw"' + (swipe ? ' data-swipe="' + m.id + '" data-exec="' + (m.estado === 'Proyectado' ? 1 : 0) + '"' : '') + '>' +
     (swipe ? '<div class="sw-bg"><span class="sw-ok">' + IC.check + ' Ejecutar</span><span class="sw-del">Eliminar ' + IC.x + '</span></div>' : '') +
     '<div class="mv ' + movClass(m) + (sel ? ' sel' : '') + '" data-act="' + (S.selMode ? 'toggleSel' : 'editMov') + '" data-id="' + m.id + '" data-lp="' + m.id + '">' +
-    '<span class="mv-bar"></span><span class="mv-ico">' + catIcon(m.categoria) + '</span>' +
+    '<span class="mv-bar"></span><span class="mv-ico" style="--c:' + catColor(m.categoria) + '">' + catIcon(m.categoria) + '</span>' +
     '<div class="mv-main"><div class="mv-t">' + esc(title) + (locked ? ' <span class="tag">🔒</span>' : '') + (m.revisar ? ' <span class="tag rev">🔔</span>' : '') + '</div>' +
       '<div class="mv-s">' + (m.adjunto ? '📎 ' : '') + (o.date ? esc(shortDate(m.fecha)) + ' · ' : '') + '<span class="dot" style="--c:' + ctaColor(m.cuentaId) + '"></span>' + esc(ctaName(m.cuentaId)) +
       (meta ? ' · ' + esc((meta.icono || '🎯') + ' ' + meta.nombre) : '') + (m.detalle && m.categoria !== CAT_TRANSF ? ' · ' + esc(m.detalle) : '') + (o.nota ? '<span class="mv-nota">' + esc(o.nota) + '</span>' : '') + '</div></div>' +
@@ -953,7 +986,7 @@ function viewAhorro() {
   let h = topbar('Ahorro', eyeBtn() + (aho.length ? '<button class="pill accent" data-act="newMeta">+ Meta</button>' : ''));
   if (!aho.length) {
     return h + '<section class="card onboard"><div class="onb-emoji">🐷</div><h2>Tus ahorros, aparte</h2>' +
-      '<p>Crea una cuenta de ahorro y reparte su dinero en metas (viaje, emergencias, etc.). También suma en tu calendario.</p>' +
+      '<p>Crea una cuenta de ahorro y reparte su dinero en metas (viaje, emergencias, etc.). Va aparte de tu saldo del día a día.</p>' +
       '<button class="btn primary big" data-act="newCuenta" data-tipo="Ahorro">Crear cuenta de ahorro</button></section>';
   }
   const tot = (cur, real) => sum(S.movs.filter(m => (!real || m.estado === 'Real') && isAhorro(m.cuentaId) && curOf(m.cuentaId) === cur), m => m.monto);
@@ -1049,7 +1082,7 @@ function openDay(d) {
     update: sh => {
       const st = sh.state;
       const all = M().filter(m => m.fecha === d).sort(sortByOrden);
-      const enFlujo = m => !isCard(m.cuentaId) && curOf(m.cuentaId) === S.moneda; // como el calendario: tus cuentas de la moneda elegida
+      const enFlujo = m => isCorr(m.cuentaId) && curOf(m.cuentaId) === S.moneda; // como el calendario: corrientes de la moneda elegida
       const net = sum(all.filter(enFlujo), m => m.monto);
       const bal = balanceUpTo(d, false, enFlujo);
       const cats = {};
@@ -1064,13 +1097,16 @@ function openDay(d) {
       if (Object.keys(cats).length) top += '<details class="cats"' + (openCats ? ' open' : '') + '><summary>Sumas por categoría</summary>' + Object.keys(cats).map(k => '<div class="kv"><span>' + esc(k) + '</span><b class="' + (cats[k] >= 0 ? 'pos' : 'neg') + '">' + moneyPlus(cats[k]) + '</b></div>').join('') + '</details>';
       let h = '';
       if (q || st.est) h += '<p class="muted small">Mostrando ' + list.length + ' de ' + all.length + ' · Subtotal ' + moneyPlus(sum(list, m => m.monto)) + '</p>';
-      // Tres grupos: lo que mueve el saldo del calendario, las compras con tarjeta (se pagan despues) y lo de la otra moneda.
-      const gSuma = list.filter(enFlujo), gTj = list.filter(m => isCard(m.cuentaId)), gOtra = list.filter(m => !enFlujo(m) && !isCard(m.cuentaId));
+      // Grupos: lo que mueve el saldo del calendario, las compras con tarjeta (se pagan despues), lo de las
+      // cuentas de ahorro (no cambia ese saldo) y lo de la otra moneda.
+      const gSuma = list.filter(enFlujo), gTj = list.filter(m => isCard(m.cuentaId));
+      const gAho = list.filter(m => isAhorro(m.cuentaId) && curOf(m.cuentaId) === S.moneda), gOtra = list.filter(m => !enFlujo(m) && !isCard(m.cuentaId) && !gAho.includes(m));
       const grupo = (titulo, arr, sub, nf) => arr.length ? (titulo ? '<h4 class="sec day-sec">' + titulo + (sub ? '<small>' + sub + '</small>' : '') + '</h4>' : '') +
         '<div class="list' + (nf ? ' nf' : '') + '">' + arr.map(m => movRow(m, { order: st.order, nota: nf ? notaTarjeta(m) : '' })).join('') + '</div>' : '';
-      const varios = (gTj.length || gOtra.length) && gSuma.length;
+      const varios = (gTj.length || gAho.length || gOtra.length) && gSuma.length;
       h += list.length ? grupo(varios ? 'Mueven tu saldo' : '', gSuma, varios ? moneyPlus(sum(gSuma, m => m.monto)) : '') +
           grupo('Con tarjeta de crédito', gTj, 'no restan hoy: se pagan en su fecha', true) +
+          grupo('Con cuentas de ahorro', gAho, 'se ven en la pestaña Ahorro; no cambian el saldo', true) +
           grupo(S.moneda === 'PEN' ? 'En dólares' : 'En soles', gOtra, 'van en su propio calendario', true)
         : '<div class="empty small"><p>' + (all.length ? 'Ningún movimiento coincide.' : 'Sin movimientos este día.') + '</p></div>';
       if (all.length) {
@@ -1251,6 +1287,7 @@ async function submitMov(sh) {
   const btn = $('button[type=submit]', sh.body);
   const label = btn.textContent;
   btn.disabled = true;
+  btn.classList.add('loading');
   btn.textContent = 'Guardando...';
   const antes = presupSnapshot();
   try {
@@ -1289,6 +1326,7 @@ async function submitMov(sh) {
   } catch (e) {
     if (!(e instanceof ApiError)) toast(e.message, 'error');
     btn.disabled = false;
+    btn.classList.remove('loading');
     btn.textContent = label;
   }
 }
@@ -1422,7 +1460,7 @@ function openCuentas() {
             '<b class="' + (ctaBalance(c.id, true) < 0 ? 'neg' : '') + '">' + money(ctaBalance(c.id, true), c.moneda) + '</b></button>';
         }).join('') + '</div>' : '<p class="muted small center">Ninguna.</p>');
       };
-      return grp('Corriente', 'Corrientes', 'Suman en el calendario y en tu saldo.') + grp('Ahorro', 'Ahorro', 'También suman en el calendario; además pueden tener metas.') +
+      return grp('Corriente', 'Corrientes', 'Forman el saldo del calendario y de Inicio.') + grp('Ahorro', 'Ahorro', 'Se ven en la pestaña Ahorro y pueden tener metas. Sus movimientos aparecen en el calendario, pero no cambian el saldo.') +
         grp('Tarjeta', 'Tarjetas de crédito', 'La compra no resta el día que la haces: el pago y cada cuota restan en su fecha de pago.');
     }
   });
@@ -1435,7 +1473,7 @@ function openCuentaForm(p) {
     kind: 'ctaform', closeLabel: 'Cancelar', title: c ? (c.tipo === 'Tarjeta' ? 'Editar tarjeta' : 'Editar cuenta') : 'Nueva cuenta', state: { F },
     render: sh => {
       const f = sh.state.F, tj = f.tipo === 'Tarjeta', cfg = f.config;
-      const ayuda = { Corriente: 'Para el día a día. Suma en el calendario.', Ahorro: 'Suma en el calendario y puedes repartir su dinero en metas.',
+      const ayuda = { Corriente: 'Para el día a día. Forma el saldo del calendario.', Ahorro: 'Se ve en la pestaña Ahorro y puedes repartir su dinero en metas. No suma al saldo del calendario.',
         Tarjeta: 'Bimoneda (soles y dólares). La compra cuenta como gasto en su fecha; en el calendario resta el pago de cada estado de cuenta y cada cuota, en su fecha de pago.' };
       let h = '<form data-form="cuenta">' +
         '<label class="fld"><span>Nombre</span><input name="nombre" value="' + esc(f.nombre) + '" placeholder="' + (tj ? 'Ej. Visa BCP, Mastercard Interbank' : 'Ej. BCP Sueldo, Interbank, Ahorro BBVA') + '" required autocomplete="off"></label>' +
@@ -1792,6 +1830,8 @@ const ACT = {
     if (el.dataset.tab === 'inicio') ACT._lastInicio = now;
     goTab(el.dataset.tab);
   },
+  // Plegar/desplegar 'Proximos 7 dias' sin redibujar (asi se anima) y recordarlo.
+  toggleProx: el => { const sec = el.closest('.fold'); const on = !sec.classList.contains('open'); sec.classList.toggle('open', on); el.setAttribute('aria-expanded', on); store.set('proxOpen', on); },
   goCal: () => { S.month = firstOfMonth(pd(today())); goTab('calendario'); },
   goCalSum: () => { S.month = firstOfMonth(pd(today())); S.calView = 'month'; goTab('calendario'); openResumen(); },
   openResumen: () => openResumen(),
@@ -2491,7 +2531,7 @@ function animateCounts() {
     const from = S.counts[key] == null ? 0 : S.counts[key];
     S.counts[key] = to;
     if (S.privacy || Math.abs(to - from) < 0.005 || window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
-    const t0 = performance.now(), dur = 700;
+    const t0 = performance.now(), dur = document.body.classList.contains('reveal') ? 1300 : 700;
     (function step(t) {
       if (!el.isConnected) return;
       const k = Math.min(1, (t - t0) / dur), e = 1 - Math.pow(1 - k, 3);
@@ -3052,7 +3092,7 @@ document.addEventListener('visibilitychange', () => { if (!document.hidden && fi
 
 /* ============================ CARGA / SINCRONIZACION ============================ */
 async function loadData(manual) {
-  if (manual) setBusy(true);
+  if (manual) setBusy(true, 'Sincronizando...');
   try {
     const d = await api('getData');
     S.movs = d.movements || [];
@@ -3060,10 +3100,11 @@ async function loadData(manual) {
     S.loaded = true;
     S.lastSync = Date.now();
     refreshUI();
-    if (manual) toast('Datos actualizados.', 'ok');
+    if (manual) { document.body.classList.remove('busy'); busyDone('Al día'); }
   } catch (e) {
     if (!e.auth) toast(e.message, 'error');
-  } finally { if (manual) setBusy(S.pending > 0); }
+    if (manual) setBusy(S.pending > 0);
+  }
 }
 let syncing = false;
 async function backgroundSync() {
@@ -3141,7 +3182,9 @@ function hideSplash() {
   setTimeout(() => {
     sp.classList.add('hide');
     document.body.classList.add('reveal');
-    setTimeout(() => { sp.remove(); document.body.classList.remove('reveal'); }, 1000);
+    // Los montos cuentan desde cero mientras aparecen.
+    if (!reduce) { S.counts = {}; setTimeout(animateCounts, 220); }
+    setTimeout(() => { sp.remove(); document.body.classList.remove('reveal'); }, 1600);
   }, wait);
 }
 document.addEventListener('DOMContentLoaded', () => { boot(); hideSplash(); });
