@@ -6,7 +6,7 @@
 'use strict';
 
 const CFG = Object.assign({ CURRENCY: 'S/', LOCALE: 'es-PE', SYNC_INTERVAL_MS: 15000, APP_NAME: 'Finanzas', APP_VERSION: '1.0.0' }, window.APP_CONFIG || {});
-CFG.APP_VERSION = '3.1.0'; // la version la marca este archivo, no config.js
+CFG.APP_VERSION = '3.2.0'; // la version la marca este archivo, no config.js
 const CAT_TRANSF = 'TRANSF. CUENTAS';
 const CAT_SALDO_INI = 'SALDO INICIAL';
 const CAT_PROTEGIDAS = [CAT_SALDO_INI, CAT_TRANSF];
@@ -581,6 +581,21 @@ function eyeBtn() {
 function countNum(key, n, cur, cls) {
   return '<span class="' + (cls || '') + '" data-count="' + n + '" data-ck="' + key + '" data-cur="' + (cur || '') + '">' + money(n, cur) + '</span>';
 }
+// Ahorro del mes: desde el dia 5 (el mes anterior ya cerro), si este mes aun no hay ningun aporte a una
+// cuenta de ahorro (real o proyectado), toca ahorrar algo. Devuelve null si no corresponde avisar.
+function ahorroPendiente() {
+  const t = today(), aho = activeCuentas('Ahorro');
+  if (pd(t).getDate() < 5) return null;
+  const mk = t.slice(0, 7);
+  if (S.movs.some(m => m.fecha.startsWith(mk) && isAhorro(m.cuentaId) && m.monto > 0 && m.categoria !== CAT_SALDO_INI)) return null;
+  const prev = new Date(pd(t).getFullYear(), pd(t).getMonth() - 1, 1);
+  return { mesCerrado: prev.toLocaleDateString(CFG.LOCALE, { month: 'long' }), cuentaId: (aho[0] || {}).id || '' };
+}
+function ahorroAviso(cls) {
+  const a = ahorroPendiente();
+  if (!a) return '';
+  return '<button class="notice save ' + (cls || '') + '" data-act="' + (a.cuentaId ? 'deposit' : 'newCuenta') + '" data-id="' + a.cuentaId + '" data-tipo="Ahorro"><i></i><span><b>Ya cerró ' + esc(a.mesCerrado) + ': toca ahorrar</b><br><small>Aún no hay ningún aporte al ahorro este mes. ' + (a.cuentaId ? 'Toca para registrarlo.' : 'Crea tu cuenta de ahorro.') + '</small></span>' + IC.chevR + '</button>';
+}
 // Inicio: solo cuentas corrientes (el ahorro vive en su pestaña). Orden: saldo, avisos, el mes,
 // cuentas, tarjetas, presupuestos y, al final, los próximos 7 días (plegable).
 function viewInicio() {
@@ -616,6 +631,8 @@ function viewInicio() {
 
   // 2) Avisos (solo si hay)
   const avisos = [];
+  const avAho = ahorroAviso();
+  if (avAho) avisos.push(avAho);
   const nRev = porCompletar().length + bandeja().length;
   if (nRev) avisos.push('<button class="notice info" data-act="openCorreos"><i></i><span><b>' + nRev + ' del correo del banco</b> por completar</span>' + IC.chevR + '</button>');
   const venc = vencidos();
@@ -646,12 +663,30 @@ function viewInicio() {
   }).join('') + '<button class="acc add" data-act="newCuenta" data-tipo="Corriente">' + IC.plus + '<span>Nueva</span></button></div>';
   if (tarjetas.length) h += '<section class="card"><div class="card-head"><h2>Tarjetas de crédito</h2></div>' + tarjetas.map(cardSummaryRow).join('') + '</section>';
 
-  // 5) Presupuestos
+  // 5) Cuadre con el banco: saldo real registrado en la app vs. lo que dice el banco
+  if (corr.length) {
+    h += '<section class="card cuadre-card"><div class="card-head"><h2>Cuadre con el banco</h2><button class="link" data-act="openCuadre">Actualizar</button></div>';
+    const monedas = ['PEN'].concat(corr.some(c => c.moneda === 'USD') ? ['USD'] : []);
+    let alguno = false;
+    monedas.forEach(cur => {
+      const r = cuadre(cur);
+      if (!r.hayDatos) return;
+      alguno = true;
+      const ok = Math.abs(r.dif) < 0.01;
+      h += (monedas.length > 1 ? '<h4 class="sec">' + (cur === 'USD' ? 'Dólares' : 'Soles') + '</h4>' : '') +
+        '<div class="cuadre-grid"><div><span>Saldo en bancos</span><b>' + money(r.banco, cur) + '</b></div><div><span>Real en la app</span><b>' + money(r.app, cur) + '</b></div></div>' +
+        '<div class="cuadre-dif ' + (ok ? 'ok' : r.dif > 0 ? 'mas' : 'menos') + '"><span>' + (ok ? 'Cuadrado' : r.dif > 0 ? 'El banco tiene más' : 'El banco tiene menos') + '</span><b>' + (ok ? '✓' : moneyPlus(r.dif, cur)) + '</b></div>';
+    });
+    if (!alguno) h += '<p class="muted small">Anota el saldo que ves en la app de tu banco y compáralo con los movimientos reales registrados aquí.</p><button class="btn wide" data-act="openCuadre">Anotar saldos del banco</button>';
+    h += '</section>';
+  }
+
+  // 6) Presupuestos
   const pr = presupRows(ms);
   if (pr.length) h += '<section class="card"><div class="card-head"><h2>Presupuestos</h2><button class="link" data-act="openPresup">Editar</button></div>' + pr.slice(0, 4).map(presupBar).join('') + '</section>';
   else h += '<button class="card cta-card" data-act="openPresup"><span class="al-ico">🎯</span><span><b>Define presupuestos</b><br><small class="muted">Un tope mensual por categoría; te avisamos al llegar al 80%.</small></span></button>';
 
-  // 6) Próximos 7 días (al final, se puede plegar)
+  // 7) Próximos 7 días (al final, se puede plegar)
   const lim = addDays(t, 7);
   const prox = M().filter(m => m.estado === 'Proyectado' && m.fecha >= t && m.fecha <= lim && !isCard(m.cuentaId) && !(m.enlace && m.tipo === 'Ingreso' && partnerOf(m)))
     .sort((a, b) => a.fecha < b.fecha ? -1 : a.fecha > b.fecha ? 1 : sortByOrden(a, b));
@@ -989,6 +1024,7 @@ function viewAhorro() {
       '<p>Crea una cuenta de ahorro y reparte su dinero en metas (viaje, emergencias, etc.). Va aparte de tu saldo del día a día.</p>' +
       '<button class="btn primary big" data-act="newCuenta" data-tipo="Ahorro">Crear cuenta de ahorro</button></section>';
   }
+  h += ahorroAviso('in-aho');
   const tot = (cur, real) => sum(S.movs.filter(m => (!real || m.estado === 'Real') && isAhorro(m.cuentaId) && curOf(m.cuentaId) === cur), m => m.monto);
   const total = tot('PEN', true), totalP = tot('PEN', false);
   h += '<section class="hero savings"><div class="hero-lbl">Total ahorrado</div><div class="hero-amt">' + countNum('ahoT', total, 'PEN') + '</div>' +
@@ -1034,31 +1070,42 @@ function metaCard(meta) {
 }
 
 /* ============================ MAS ============================ */
+// Más: perfil arriba, las herramientas como cuadros de colores y, abajo, preferencias y sesión.
 function viewMas() {
   const venc = vencidos().length;
-  const item = (act, ico, label, sub, badge) => '<button class="menu-item" data-act="' + act + '"><span class="mi-ico">' + ico + '</span><span class="mi-body"><span>' + label + '</span>' + (sub ? '<small>' + sub + '</small>' : '') + '</span>' + (badge ? '<span class="badge">' + badge + '</span>' : '') + '<span class="mi-chev">' + IC.chevR + '</span></button>';
   const nPres = Object.keys(S.presup).length;
   const lk = store.get('lock', null);
-  return topbar('Más', eyeBtn() + syncChip()) +
-    '<div class="menu">' +
-      item('openCuentas', '🏦', 'Cuentas', S.cuentas.length + ' cuenta(s)') +
-      item('openCats', '🏷️', 'Categorías', S.cats.length + ' categoría(s) · toca el ícono para cambiarlo') +
-      item('openPresup', '🎯', 'Presupuestos', nPres ? nPres + ' categoría(s) con tope mensual' : 'Pon topes mensuales por categoría') +
-      item('openFijos', '📌', 'Gastos fijos', 'Plantilla mensual') +
-      item('openCuadre', '⚖️', 'Cuadre con el banco', 'Compara con el saldo real') +
-      item('openCorreos', '📬', 'Correo del banco', S.correos && S.correos.conectado ? 'Activo' : 'Registra solos tus consumos', (porCompletar().length + bandeja().length) || '') +
-      item('openVencidos', '⏰', 'Proyectados vencidos', '', venc || '') +
-      item('openSearch', '🔍', 'Buscar movimientos', '') +
-    '</div><div class="menu">' +
+  const nCorreo = porCompletar().length + bandeja().length;
+  const nTj = S.cuentas.filter(c => c.tipo === 'Tarjeta' && c.activa).length;
+  const fijosOk = S.fijosAplicados.some(a => a.mes === monthKey(pd(today())));
+  const tile = (act, ico, color, label, sub, badge) => '<button class="tile" data-act="' + act + '" style="--c:' + color + '">' +
+    '<span class="tile-ico">' + ico + '</span>' + (badge ? '<span class="badge">' + badge + '</span>' : '') +
+    '<span class="tile-t">' + label + '</span><span class="tile-s">' + (sub || '') + '</span></button>';
+  const item = (act, ico, label, sub, right) => '<button class="menu-item" data-act="' + act + '"><span class="mi-ico">' + ico + '</span><span class="mi-body"><span>' + label + '</span>' + (sub ? '<small>' + sub + '</small>' : '') + '</span>' + (right || '<span class="mi-chev">' + IC.chevR + '</span>') + '</button>';
+  const nombre = (S.user && S.user.nombre) || 'Usuario';
+  return topbar('Más', eyeBtn()) +
+    '<section class="profile"><span class="avatar">' + esc(nombre.charAt(0).toUpperCase()) + '</span><span class="pf-body"><b>' + esc(nombre) + '</b><small>@' + esc((S.user && S.user.usuario) || '') + ' · v' + esc(CFG.APP_VERSION) + (window.LOCAL_SERVER ? ' · modo prueba' : '') + '</small></span>' +
+      '<button class="pf-sync" data-act="forceSync">' + IC.sync + '<span>' + esc(syncLabel() || 'Sincronizar') + '</span></button></section>' +
+    '<h4 class="sec">Tus finanzas</h4><div class="tiles">' +
+      tile('openCuentas', '🏦', '#0a84ff', 'Cuentas', S.cuentas.length + ' cuenta(s)' + (nTj ? ' · ' + nTj + ' tarjeta(s)' : '')) +
+      tile('openCuadre', '⚖️', '#12b3a6', 'Cuadre con el banco', 'Compara con el saldo real') +
+      tile('openPresup', '🎯', '#ff9f0a', 'Presupuestos', nPres ? nPres + ' con tope mensual' : 'Pon topes por categoría') +
+      tile('openFijos', '📌', '#bf5af2', 'Gastos fijos', fijosOk ? 'Cargados este mes ✓' : 'Plantilla mensual') +
+      tile('openCorreos', '📬', '#5e5ce6', 'Correo del banco', S.correos && S.correos.conectado ? 'Activo' : 'Registra tus consumos', nCorreo || '') +
+      tile('openVencidos', '⏰', '#ff375f', 'Vencidos', venc ? 'Proyectados sin ejecutar' : 'Todo al día', venc || '') +
+      tile('openCats', '🏷️', '#30b158', 'Categorías', S.cats.length + ' categorías') +
+      tile('openSearch', '🔍', '#8e8e93', 'Buscar', 'Movimientos') +
+    '</div>' +
+    '<h4 class="sec">Preferencias</h4><div class="menu">' +
       item('openApariencia', '🎨', 'Apariencia', 'Color de acento y tema claro / oscuro') +
-      item('openSeguridad', '🔒', 'Bloqueo con Face ID / PIN', lk && lk.pinHash ? (lk.credId ? 'Activo · Face ID + PIN' : 'Activo · PIN') : 'Desactivado') +
-      item('togglePrivacy', S.privacy ? '🙈' : '👁️', S.privacy ? 'Mostrar montos' : 'Ocultar montos', 'También con el ojo de arriba') +
-    '</div><div class="menu">' +
-      item('openPassword', '🔑', 'Cambiar contraseña', S.user ? esc(S.user.usuario) : '') +
-      item('forceSync', '🔄', 'Sincronizar ahora', esc(syncLabel())) +
+      item('openSeguridad', '🔒', 'Face ID / PIN', lk && lk.pinHash ? (lk.credId ? 'Activo · Face ID + PIN' : 'Activo · PIN') : 'Desactivado') +
+      item('togglePrivacy', S.privacy ? '🙈' : '👁️', 'Ocultar montos', 'También con el ojo de arriba', '<span class="switch' + (S.privacy ? ' on' : '') + '"><i></i></span>') +
+    '</div>' +
+    '<h4 class="sec">Sesión</h4><div class="menu">' +
+      item('openPassword', '🔑', 'Cambiar contraseña', '') +
       item('installHelp', '📲', 'Instalar en el teléfono', '') +
-    '</div><div class="menu">' + item('logout', '🚪', 'Cerrar sesión', '') + '</div>' +
-    '<p class="muted small center">' + esc(CFG.APP_NAME) + ' v' + esc(CFG.APP_VERSION) + (window.LOCAL_SERVER ? ' · MODO PRUEBA (datos locales)' : '') + '</p>';
+      item('logout', '🚪', '<span class="neg">Cerrar sesión</span>', '', ' ') +
+    '</div>';
 }
 
 /* ============================ SHEETS ============================ */
@@ -2775,21 +2822,10 @@ function computeVirtual() {
         if (!(s.monto > 0.005)) return;
         const idb = 'VIRT|' + card.id + '|' + cur + '|' + s.close;
         const push = (sufijo, o) => out.push(Object.assign({}, base, { id: idb + sufijo, close: s.close, fecha: s.due, orden: o0 }, o));
-        if (st.cfg.modo === 'minimo') {
-          push('', { monto: -s.monto, titulo: 'Pago mínimo ' + card.nombre + tag, detalle: 'Estado de cuenta · corte ' + shortDate(s.close) + (s.minEst ? ' · estimado' : '') });
-          return;
-        }
-        // Pago total: cada cuota va como su propio pago y aparte lo demas del ciclo (si aun no se pago nada).
-        const cuotas = s.lines.filter(l => l.n > 1), resto = r2(s.monto - sum(cuotas, l => l.monto));
-        if (!cuotas.length || s.pagado > 0.005 || resto < -0.005) {
-          push('', { monto: -s.monto, titulo: 'Pago ' + card.nombre + tag, detalle: 'Estado de cuenta · corte ' + shortDate(s.close) + (cuotas.length ? ' · incluye ' + cuotas.length + ' cuota(s)' : '') });
-          return;
-        }
-        const consumos = sum(s.lines.filter(l => l.n <= 1), l => l.monto) + (s.arrastre || 0);
-        if (resto > 0.005) push('|c', { monto: -resto, titulo: consumos > 0.005 || s.cerrado ? 'Pago ' + card.nombre + tag : (s.interes > 0.005 ? 'Intereses y seguro · ' : 'Seguro de desgravamen · ') + card.nombre + tag,
-          detalle: (s.cerrado ? 'Consumos del estado de cuenta' : 'Consumos del ciclo') + ' · corte ' + shortDate(s.close) + (s.interes + s.seguro > 0.005 ? ' · incluye intereses/seguro' : '') });
-        cuotas.forEach((l, k) => push('|q' + k, { orden: o0 + k + 1, monto: -r2(l.monto), cuota: (l.i + 1) + '/' + l.n, compraId: l.m.id,
-          titulo: 'Cuota ' + (l.i + 1) + '/' + l.n + ' · ' + (l.m.detalle || l.m.categoria), detalle: card.nombre + tag + ' · corte ' + shortDate(s.close) }));
+        // Un solo pago por estado de cuenta (la tarjeta se paga completa, no cuota por cuota).
+        const nCuotas = s.lines.filter(l => l.n > 1).length;
+        push('', { monto: -s.monto, titulo: (st.cfg.modo === 'minimo' ? 'Pago mínimo tarjeta ' : 'Pago tarjeta ') + card.nombre + tag,
+          detalle: 'Estado de cuenta · corte ' + shortDate(s.close) + (nCuotas ? ' · incluye ' + nCuotas + ' cuota(s)' : '') + (s.interes + s.seguro > 0.005 ? ' · intereses/seguro' : '') + (st.cfg.modo === 'minimo' && s.minEst ? ' · estimado' : '') });
       });
     });
   });
@@ -2897,7 +2933,7 @@ function openTarjeta(id) {
           : '<div class="cc-foot"><span>Corte día ' + cfg.corte + ' · pago día ' + cfg.pago + '</span></div>') + '</div>';
       // Como se paga (total o minimo)
       h += '<div class="seg tc-modo">' + [['total', 'Pago total'], ['minimo', 'Pago mínimo']].map(x => '<button class="' + (cfg.modo === x[0] ? 'on' : '') + '" data-act="tcModo" data-id="' + id + '" data-v="' + x[0] + '">' + x[1] + '</button>').join('') + '</div>' +
-        '<p class="muted small center">El calendario proyecta el ' + (cfg.modo === 'minimo' ? '<b>pago mínimo</b>; lo que quede pasa al mes siguiente con intereses' : '<b>pago total</b> de cada estado de cuenta, con cada cuota por separado') + '.</p>';
+        '<p class="muted small center">El calendario proyecta el ' + (cfg.modo === 'minimo' ? '<b>pago mínimo</b>; lo que quede pasa al mes siguiente con intereses' : '<b>pago total</b> de cada estado de cuenta, cuotas incluidas, en un solo movimiento') + '.</p>';
       const blocks = ['PEN', 'USD'].map(cur => cardBlock(card, cur)).join('');
       h += blocks || '<div class="empty small"><p>Aún no hay compras en esta tarjeta.</p></div>';
       h += '<button class="btn wide" data-act="tcCompra" data-id="' + id + '">+ Registrar compra</button>';
